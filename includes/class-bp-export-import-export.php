@@ -30,52 +30,75 @@ class BP_Export_Import_Export
      */
     public function export_users()
     {
-        $users = $this->get_users();
+        $paged = 1;
+        $limit = apply_filters('bp_export_import_user_limit', 500); // Limit to 500 users per page
 
-        if ($users === false) {
-            wp_die('No users found for export.');
-        }
-
-        // Get selected fields from the form submission
-        $selected_xprofile_fields = isset($_POST['xprofile_fields']) ? array_map('sanitize_text_field', $_POST['xprofile_fields']) : [];
-        $selected_user_meta_keys = isset($_POST['user_meta_keys']) ? array_map('sanitize_text_field', $_POST['user_meta_keys']) : [];
-
-        if (empty($selected_xprofile_fields) && empty($selected_user_meta_keys)) {
-            wp_die('No fields selected for export.');
-        }
-
+        // Open CSV output early to prevent memory issues
         $format = isset($_POST['export_format']) ? sanitize_text_field($_POST['export_format']) : 'csv';
 
-        switch ($format) {
-            case 'json':
-                $this->export_as_json($users);
-                break;
-            case 'xml':
-                $this->export_as_xml($users);
-                break;
-            case 'csv':
-            default:
-                $this->export_as_csv($users);
-                break;
+        if ($format == 'csv') {
+            $filename = 'bp-users-export-' . date('Y-m-d') . '.csv';
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename=' . $filename);
+            $output = fopen('php://output', 'w');
         }
+
+        do {
+            $users = $this->get_users($paged);
+
+            if ($users === false) {
+                if ($paged === 1) {
+                    wp_die('No users found for export.');
+                }
+                break;
+            }
+
+            $write_headers = ($paged === 1); // Write headers only on the first page
+            switch ($format) {
+                case 'json':
+                    $this->export_as_json($users, $paged, $limit);
+                    break;
+                case 'xml':
+                    $this->export_as_xml($users, $paged, $limit);
+                    break;
+                case 'csv':
+                default:
+                    $this->export_as_csv($users, $output, $write_headers);
+                    break;
+            }
+
+            $paged++;
+        } while (count($users) === $limit);
+
+        if ($format == 'csv') {
+            fclose($output);
+        }
+
+        exit;
     }
+
 
     /**
      * Retrieve users and their BuddyPress data for export.
      *
      * @return array|bool List of users with their data, or false if no users found.
      */
-    private function get_users()
+    private function get_users($paged = 1)
     {
+        // Apply filter to allow dynamic setting of the user limit
+        $limit = apply_filters('bp_export_import_user_limit', 500);
+
         $args = array(
-            'fields' => 'all',
+            'fields'   => 'all',
             'role__in' => isset($_POST['roles']) ? array_map('sanitize_text_field', $_POST['roles']) : array(),
+            'number'   => $limit, // Limit to the number set by the filter
+            'paged'    => $paged, // Set the current page
         );
 
         $user_query = new WP_User_Query($args);
         $users = $user_query->get_results();
 
-        if (! is_array($users) || empty($users)) {
+        if (!is_array($users) || empty($users)) {
             return false;
         }
 
@@ -86,25 +109,22 @@ class BP_Export_Import_Export
      * Export users as a CSV file.
      *
      * @param array $users List of users to export.
+     * @param resource $output CSV file handle.
+     * @param bool $write_headers Whether to write headers (only true on the first call).
      */
-    private function export_as_csv($users)
+    private function export_as_csv($users, $output, $write_headers = true)
     {
-        $filename = 'bp-users-export-' . date('Y-m-d') . '.csv';
-
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename=' . $filename);
-
-        $output = fopen('php://output', 'w');
-
         // Get selected XProfile fields and user meta keys
         $selected_xprofile_fields = isset($_POST['xprofile_fields']) ? array_map('sanitize_text_field', $_POST['xprofile_fields']) : [];
         $selected_user_meta_keys = isset($_POST['user_meta_keys']) ? array_map('sanitize_text_field', $_POST['user_meta_keys']) : [];
 
-        // Create CSV headers
-        $headers = ['User ID', 'Username', 'Email'];
-        $headers = array_merge($headers, $selected_xprofile_fields, $selected_user_meta_keys);
+        if ($write_headers) {
+            // Create CSV headers
+            $headers = ['User ID', 'Username', 'Email'];
+            $headers = array_merge($headers, $selected_xprofile_fields, $selected_user_meta_keys);
 
-        fputcsv($output, $headers);
+            fputcsv($output, $headers);
+        }
 
         foreach ($users as $user) {
             $row = [
@@ -133,9 +153,6 @@ class BP_Export_Import_Export
 
             fputcsv($output, $row);
         }
-
-        fclose($output);
-        exit;
     }
 
     /**
@@ -158,14 +175,38 @@ class BP_Export_Import_Export
                 'username'     => $user->user_login,
                 'email'        => $user->user_email,
                 'profile_data' => $this->get_user_profile_data($user->ID),
-                'user_meta'    => $this->get_user_meta_data($user->ID),
+                'user_meta'    => $this->process_user_meta_data($this->get_user_meta_data($user->ID)),
             );
             $data[] = $user_data;
         }
 
-        echo json_encode($data, JSON_PRETTY_PRINT);
+        echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         exit;
     }
+
+    /**
+     * Process user meta data to handle complex structures.
+     *
+     * @param array $user_meta Raw user meta data.
+     * @return array Processed user meta data.
+     */
+    private function process_user_meta_data($user_meta)
+    {
+        $processed_meta = array();
+
+        foreach ($user_meta as $meta_key => $meta_value) {
+            $meta_value = maybe_unserialize($meta_value[0]);
+
+            if (is_array($meta_value) || is_object($meta_value)) {
+                $meta_value = json_encode($meta_value); // Convert arrays/objects to JSON string
+            }
+
+            $processed_meta[$meta_key] = $meta_value;
+        }
+
+        return $processed_meta;
+    }
+
 
     /**
      * Export users as an XML file.
@@ -184,23 +225,30 @@ class BP_Export_Import_Export
         foreach ($users as $user) {
             $user_xml = $xml->addChild('user');
             $user_xml->addChild('user_id', $user->ID);
-            $user_xml->addChild('username', $user->user_login);
-            $user_xml->addChild('email', $user->user_email);
+            $user_xml->addChild('username', htmlspecialchars($user->user_login, ENT_XML1, 'UTF-8'));
+            $user_xml->addChild('email', htmlspecialchars($user->user_email, ENT_XML1, 'UTF-8'));
 
             $profile_data = $this->get_user_profile_data($user->ID);
             foreach ($profile_data as $field_name => $field_value) {
-                $user_xml->addChild(sanitize_title($field_name), $field_value);
+                $user_xml->addChild(sanitize_title($field_name), htmlspecialchars($field_value, ENT_XML1, 'UTF-8'));
             }
 
             $user_meta = $this->get_user_meta_data($user->ID);
             foreach ($user_meta as $meta_key => $meta_value) {
-                $user_xml->addChild(sanitize_title($meta_key), maybe_unserialize($meta_value[0]));
+                $meta_value = maybe_unserialize($meta_value[0]);
+
+                if (is_array($meta_value) || is_object($meta_value)) {
+                    $meta_value = json_encode($meta_value); // Convert arrays/objects to JSON string
+                }
+
+                $user_xml->addChild(sanitize_title($meta_key), htmlspecialchars($meta_value, ENT_XML1, 'UTF-8'));
             }
         }
 
         echo $xml->asXML();
         exit;
     }
+
 
     /**
      * Retrieve the names of all BuddyPress XProfile fields.
