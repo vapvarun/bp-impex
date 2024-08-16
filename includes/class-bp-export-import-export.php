@@ -31,7 +31,6 @@ class BP_Export_Import_Export
     public function export_users()
     {
         $paged = 1;
-        $limit = apply_filters('bp_export_import_user_limit', 500); // Limit to 500 users per page
 
         // Open CSV output early to prevent memory issues
         $format = isset($_POST['export_format']) ? sanitize_text_field($_POST['export_format']) : 'csv';
