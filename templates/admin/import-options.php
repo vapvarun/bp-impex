@@ -10,9 +10,17 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Get plugin components
+// Get plugin components and ensure hooks are set up
 $importer = bp_export_import()->get_component('import');
 $field_mapping = bp_export_import()->get_component('field_mapping');
+
+// Set up hooks only when on this page
+if ($importer) {
+    $importer->setup_hooks();
+}
+if ($field_mapping) {
+    $field_mapping->setup_hooks();
+}
 
 // Get import statistics
 $import_stats = $importer ? $importer->get_import_stats() : array();
@@ -282,161 +290,6 @@ jQuery(document).ready(function($) {
         }
     });
 
-    // File preview
-    $('#preview-file').on('click', function() {
-        var formData = new FormData();
-        var fileInput = document.getElementById('import_file');
-        
-        if (fileInput.files.length === 0) {
-            alert('<?php esc_js_e('Please select a file first.', 'bp-export-import'); ?>');
-            return;
-        }
-        
-        formData.append('action', 'bp_file_preview');
-        formData.append('nonce', bp_export_import_ajax.nonce);
-        formData.append('preview_file', fileInput.files[0]);
-        
-        $.ajax({
-            url: bp_export_import_ajax.ajax_url,
-            type: 'POST',
-            data: formData,
-            processData: false,
-            contentType: false,
-            success: function(response) {
-                if (response.success) {
-                    filePreviewData = response.data;
-                    displayFilePreview(response.data);
-                    $('#file-preview-section').show();
-                    setupFieldMapping(response.data);
-                } else {
-                    alert('<?php esc_js_e('Error:', 'bp-export-import'); ?> ' + response.data);
-                }
-            },
-            error: function() {
-                alert('<?php esc_js_e('Error previewing file. Please try again.', 'bp-export-import'); ?>');
-            }
-        });
-    });
-
-    // Display file preview
-    function displayFilePreview(data) {
-        var html = '<div class="file-preview-table">';
-        html += '<p><strong><?php esc_js_e('Total records:', 'bp-export-import'); ?></strong> ' + data.total + '</p>';
-        
-        if (data.headers) {
-            html += '<h4><?php esc_js_e('Headers:', 'bp-export-import'); ?></h4>';
-            html += '<p>' + data.headers.join(', ') + '</p>';
-        }
-        
-        if (data.data && data.data.length > 0) {
-            html += '<h4><?php esc_js_e('Sample Data (first 5 rows):', 'bp-export-import'); ?></h4>';
-            html += '<table class="wp-list-table widefat fixed striped">';
-            
-            // Headers
-            if (data.headers) {
-                html += '<thead><tr>';
-                data.headers.forEach(function(header) {
-                    html += '<th>' + header + '</th>';
-                });
-                html += '</tr></thead>';
-            }
-            
-            // Data rows
-            html += '<tbody>';
-            data.data.slice(0, 5).forEach(function(row) {
-                html += '<tr>';
-                if (Array.isArray(row)) {
-                    row.forEach(function(cell) {
-                        html += '<td>' + (cell || '') + '</td>';
-                    });
-                } else {
-                    Object.values(row).forEach(function(cell) {
-                        html += '<td>' + (cell || '') + '</td>';
-                    });
-                }
-                html += '</tr>';
-            });
-            html += '</tbody>';
-            html += '</table>';
-        }
-        
-        html += '</div>';
-        $('#file-preview-content').html(html);
-    }
-
-    // Setup field mapping
-    function setupFieldMapping(data) {
-        // Get available BP fields via AJAX or use predefined list
-        var bpFields = [
-            { key: 'username', label: '<?php esc_js_e('Username', 'bp-export-import'); ?>' },
-            { key: 'email', label: '<?php esc_js_e('Email', 'bp-export-import'); ?>' },
-            { key: 'display_name', label: '<?php esc_js_e('Display Name', 'bp-export-import'); ?>' },
-            { key: 'first_name', label: '<?php esc_js_e('First Name', 'bp-export-import'); ?>' },
-            { key: 'last_name', label: '<?php esc_js_e('Last Name', 'bp-export-import'); ?>' },
-            { key: 'description', label: '<?php esc_js_e('Description', 'bp-export-import'); ?>' },
-            { key: 'user_url', label: '<?php esc_js_e('Website', 'bp-export-import'); ?>' }
-        ];
-        
-        var importFields = data.headers || Object.keys(data.data[0] || {});
-        
-        var html = '<table class="form-table field-mapping-table">';
-        html += '<thead><tr>';
-        html += '<th><?php esc_js_e('BuddyPress Field', 'bp-export-import'); ?></th>';
-        html += '<th><?php esc_js_e('Import Field', 'bp-export-import'); ?></th>';
-        html += '</tr></thead><tbody>';
-        
-        bpFields.forEach(function(bpField) {
-            html += '<tr>';
-            html += '<td><label for="mapping_' + bpField.key + '">' + bpField.label + '</label></td>';
-            html += '<td><select name="field_mapping[' + bpField.key + ']" id="mapping_' + bpField.key + '">';
-            html += '<option value=""><?php esc_js_e('-- Select Import Field --', 'bp-export-import'); ?></option>';
-            
-            importFields.forEach(function(importField) {
-                html += '<option value="' + importField + '">' + importField + '</option>';
-            });
-            
-            html += '</select></td>';
-            html += '</tr>';
-        });
-        
-        html += '</tbody></table>';
-        $('#field-mapping-table').html(html);
-        $('#field-mapping-section').show();
-    }
-
-    // Auto-map fields
-    $('#auto-map-fields').on('click', function() {
-        // Simple auto-mapping logic
-        var mappings = {
-            'username': ['username', 'user_login', 'login'],
-            'email': ['email', 'user_email', 'email_address'],
-            'display_name': ['display_name', 'displayname', 'full_name'],
-            'first_name': ['first_name', 'firstname', 'fname'],
-            'last_name': ['last_name', 'lastname', 'lname'],
-            'description': ['description', 'bio', 'biography'],
-            'user_url': ['user_url', 'website', 'url']
-        };
-        
-        if (filePreviewData && filePreviewData.headers) {
-            var importFields = filePreviewData.headers.map(function(field) {
-                return field.toLowerCase();
-            });
-            
-            Object.keys(mappings).forEach(function(bpField) {
-                var select = $('#mapping_' + bpField);
-                mappings[bpField].forEach(function(possibleMatch) {
-                    var index = importFields.indexOf(possibleMatch);
-                    if (index !== -1) {
-                        select.val(filePreviewData.headers[index]);
-                        return false; // Break loop
-                    }
-                });
-            });
-        }
-        
-        alert('<?php esc_js_e('Auto-mapping completed. Please review the mappings before importing.', 'bp-export-import'); ?>');
-    });
-
     // Form validation
     $('#bp-import-form').on('submit', function(e) {
         if (!document.getElementById('import_file').files.length) {
@@ -463,42 +316,6 @@ jQuery(document).ready(function($) {
     $('#save-mapping').on('click', function() {
         $('#save-mapping-modal').show();
     });
-
-    $('#save-mapping-confirm').on('click', function() {
-        var mappingName = $('#mapping-name').val().trim();
-        if (!mappingName) {
-            alert('<?php esc_js_e('Please enter a mapping name.', 'bp-export-import'); ?>');
-            return;
-        }
-        
-        // Collect mapping data
-        var mappingData = {};
-        $('.field-mapping-table select').each(function() {
-            var bpField = $(this).attr('name').replace('field_mapping[', '').replace(']', '');
-            var importField = $(this).val();
-            if (importField) {
-                mappingData[bpField] = importField;
-            }
-        });
-        
-        // Save via AJAX
-        $.post(bp_export_import_ajax.ajax_url, {
-            action: 'bp_save_field_mapping',
-            nonce: bp_export_import_ajax.nonce,
-            mapping_name: mappingName,
-            mapping_data: mappingData
-        }, function(response) {
-            if (response.success) {
-                alert('<?php esc_js_e('Mapping saved successfully!', 'bp-export-import'); ?>');
-                $('#save-mapping-modal').hide();
-                $('#mapping-name').val('');
-                // Refresh saved mappings dropdown
-                location.reload();
-            } else {
-                alert('<?php esc_js_e('Error saving mapping:', 'bp-export-import'); ?> ' + response.data);
-            }
-        });
-    });
 });
 </script>
 
@@ -523,68 +340,6 @@ jQuery(document).ready(function($) {
     border-radius: 4px;
 }
 
-.file-preview-table {
-    margin-top: 15px;
-}
-
-.file-preview-table table {
-    margin-top: 10px;
-}
-
-.field-mapping-container {
-    margin: 15px 0;
-}
-
-.field-mapping-table {
-    border-collapse: collapse;
-    width: 100%;
-}
-
-.field-mapping-table th,
-.field-mapping-table td {
-    padding: 10px;
-    border: 1px solid #e1e1e1;
-}
-
-.field-mapping-table th {
-    background: #f9f9f9;
-    font-weight: bold;
-}
-
-.saved-mappings {
-    margin-bottom: 20px;
-    padding: 15px;
-    background: #f0f8ff;
-    border-radius: 4px;
-}
-
-.mapping-actions {
-    margin-top: 15px;
-}
-
-.mapping-actions .button {
-    margin-right: 10px;
-}
-
-.import-errors {
-    margin-top: 15px;
-    padding: 15px;
-    background: #ffeaea;
-    border-left: 4px solid #dc3232;
-    border-radius: 4px;
-}
-
-.import-errors ul {
-    margin: 10px 0;
-    padding-left: 20px;
-}
-
-.import-errors li {
-    margin-bottom: 5px;
-    color: #dc3232;
-}
-
-/* Modal styles */
 .bp-modal {
     position: fixed;
     top: 0;
@@ -615,10 +370,6 @@ jQuery(document).ready(function($) {
     align-items: center;
 }
 
-.bp-modal-header h3 {
-    margin: 0;
-}
-
 .bp-modal-close {
     background: none;
     border: none;
@@ -631,26 +382,9 @@ jQuery(document).ready(function($) {
     padding: 20px;
 }
 
-.bp-modal-body label {
-    display: block;
-    margin-bottom: 5px;
-    font-weight: bold;
-}
-
-.bp-modal-body input[type="text"] {
-    width: 100%;
-    padding: 8px;
-    border: 1px solid #c3c4c7;
-    border-radius: 4px;
-}
-
 .bp-modal-footer {
     padding: 20px;
     border-top: 1px solid #e1e1e1;
     text-align: right;
-}
-
-.bp-modal-footer .button {
-    margin-left: 10px;
 }
 </style>

@@ -59,74 +59,74 @@ class BP_Export_Import {
      * Constructor
      */
     private function __construct() {
-        $this->init_hooks();
-        // DON'T load components immediately - only when needed
+        // MINIMAL initialization - only register hooks, no component loading
+        $this->init_basic_hooks();
     }
 
     /**
-     * Initialize WordPress hooks
+     * Initialize only essential hooks
      */
-    private function init_hooks() {
+    private function init_basic_hooks() {
+        // Text domain loading
         add_action('init', array($this, 'load_textdomain'));
-        add_action('admin_enqueue_scripts', array($this, 'admin_scripts'));
-        add_action('wp_enqueue_scripts', array($this, 'frontend_scripts'));
         
-        // ONLY register AJAX hooks when doing AJAX - NOT on every page load
-        if (wp_doing_ajax()) {
-            add_action('wp_ajax_bp_get_progress', array($this, 'ajax_get_progress'));
-            add_action('wp_ajax_bp_cancel_operation', array($this, 'ajax_cancel_operation'));
-            add_action('wp_ajax_bp_get_dashboard_stats', array($this, 'ajax_get_dashboard_stats'));
-            add_action('wp_ajax_bp_get_operations_status', array($this, 'ajax_get_operations_status'));
+        // Admin hooks - only when needed
+        if (is_admin()) {
+            add_action('admin_enqueue_scripts', array($this, 'admin_scripts'));
         }
         
-        // Cleanup hook
-        add_action('bp_export_import_cleanup_transient', array($this, 'cleanup_transient'));
+        // Frontend hooks - only when needed  
+        if (!is_admin()) {
+            add_action('wp_enqueue_scripts', array($this, 'frontend_scripts'));
+        }
+        
+        // AJAX hooks - ONLY when doing AJAX
+        if (wp_doing_ajax()) {
+            $this->init_ajax_hooks();
+        }
     }
 
     /**
-     * Load components only when needed (lazy loading)
+     * Initialize AJAX hooks separately
+     */
+    private function init_ajax_hooks() {
+        add_action('wp_ajax_bp_get_progress', array($this, 'ajax_get_progress'));
+        add_action('wp_ajax_bp_cancel_operation', array($this, 'ajax_cancel_operation'));
+        add_action('wp_ajax_bp_get_dashboard_stats', array($this, 'ajax_get_dashboard_stats'));
+        add_action('wp_ajax_bp_get_operations_status', array($this, 'ajax_get_operations_status'));
+    }
+
+    /**
+     * DO NOT auto-load components - only when explicitly requested
      */
     private function maybe_load_components() {
-        if ($this->components_loaded) {
-            return;
-        }
-
-        // Only load when actually needed
-        if (!wp_doing_ajax() && !is_admin()) {
-            return;
-        }
-
-        $this->init_components();
-        $this->components_loaded = true;
+        // DON'T auto-load anything - wait for explicit requests
+        return;
     }
 
     /**
-     * Initialize plugin components
+     * Initialize plugin components only when explicitly needed
      */
     private function init_components() {
-        // Load minimal components first
+        // Only create logger - it's lightweight
         if (!isset($this->components['logger'])) {
             $this->components['logger'] = new BP_Export_Import_Logger();
         }
         
-        if (!isset($this->components['validator'])) {
-            $this->components['validator'] = new BP_Export_Import_Validator();
-        }
-        
-        if (!isset($this->components['progress'])) {
-            $this->components['progress'] = new BP_Export_Import_Progress();
-        }
+        $this->components_loaded = true;
     }
 
     /**
-     * Get component instance with lazy loading
+     * Get component instance with strict lazy loading
      *
      * @param string $component Component name.
      * @return mixed Component instance or null if not found.
      */
     public function get_component($component) {
-        // Load components if needed
-        $this->maybe_load_components();
+        // Only load if we're in the right context
+        if (!$this->should_load_component($component)) {
+            return null;
+        }
         
         // Load specific component if not already loaded
         if (!isset($this->components[$component])) {
@@ -137,35 +137,94 @@ class BP_Export_Import {
     }
 
     /**
-     * Load a specific component on demand
+     * Check if we should load a component based on context
+     */
+    private function should_load_component($component) {
+        // Never load on regular page loads
+        if (!wp_doing_ajax() && !is_admin()) {
+            return false;
+        }
+        
+        // Only load during actual operations
+        if (wp_doing_ajax()) {
+            $action = isset($_POST['action']) ? $_POST['action'] : '';
+            $allowed_actions = array(
+                'bp_get_progress',
+                'bp_cancel_operation', 
+                'bp_export_users',
+                'bp_import_users',
+                'bp_file_preview'
+            );
+            
+            if (!in_array($action, $allowed_actions)) {
+                return false;
+            }
+        }
+        
+        // For admin pages, only load on plugin pages
+        if (is_admin()) {
+            $screen = get_current_screen();
+            if (!$screen || strpos($screen->id, 'bp-export-import') === false) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * Load a specific component on demand with strict checks
      *
      * @param string $component Component name.
      */
     private function load_specific_component($component) {
-        switch ($component) {
-            case 'field_mapping':
-                if (!isset($this->components['field_mapping'])) {
-                    $this->components['field_mapping'] = new BP_Export_Import_Field_Mapping();
-                }
-                break;
-                
-            case 'export':
-                if (!isset($this->components['export'])) {
-                    $this->components['export'] = new BP_Export_Import_Export();
-                }
-                break;
-                
-            case 'import':
-                if (!isset($this->components['import'])) {
-                    $this->components['import'] = new BP_Export_Import_Import();
-                }
-                break;
-                
-            case 'background_process':
-                if (!isset($this->components['background_process'])) {
-                    $this->components['background_process'] = new BP_Export_Import_Background_Process();
-                }
-                break;
+        // Don't load anything if logger doesn't exist yet
+        if (!isset($this->components['logger'])) {
+            $this->components['logger'] = new BP_Export_Import_Logger();
+        }
+        
+        try {
+            switch ($component) {
+                case 'validator':
+                    if (!isset($this->components['validator'])) {
+                        $this->components['validator'] = new BP_Export_Import_Validator();
+                    }
+                    break;
+                    
+                case 'progress':
+                    if (!isset($this->components['progress'])) {
+                        $this->components['progress'] = new BP_Export_Import_Progress();
+                    }
+                    break;
+                    
+                case 'field_mapping':
+                    if (!isset($this->components['field_mapping'])) {
+                        $this->components['field_mapping'] = new BP_Export_Import_Field_Mapping();
+                    }
+                    break;
+                    
+                case 'export':
+                    if (!isset($this->components['export'])) {
+                        $this->components['export'] = new BP_Export_Import_Export();
+                    }
+                    break;
+                    
+                case 'import':
+                    if (!isset($this->components['import'])) {
+                        $this->components['import'] = new BP_Export_Import_Import();
+                    }
+                    break;
+                    
+                case 'background_process':
+                    if (!isset($this->components['background_process'])) {
+                        $this->components['background_process'] = new BP_Export_Import_Background_Process();
+                    }
+                    break;
+            }
+        } catch (Exception $e) {
+            if (isset($this->components['logger'])) {
+                $this->components['logger']->log_error('Failed to load component: ' . $component . ' - ' . $e->getMessage());
+            }
         }
     }
 
@@ -373,8 +432,6 @@ class BP_Export_Import {
      * @return array Plugin information.
      */
     public function get_plugin_info() {
-        $this->maybe_load_components();
-        
         return array(
             'version' => self::VERSION,
             'name' => 'BP Export Import',

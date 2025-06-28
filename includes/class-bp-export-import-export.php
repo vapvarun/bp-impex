@@ -16,440 +16,6 @@ if (!defined('ABSPATH')) {
 class BP_Export_Import_Export {
 
     /**
-     * Export batch size
-     *
-     * @var int
-     */
-    private $batch_size = 500;
-
-    /**
-     * Progress tracker
-     *
-     * @var BP_Export_Import_Progress|null
-     */
-    private $progress;
-
-    /**
-     * Logger instance
-     *
-     * @var BP_Export_Import_Logger|null
-     */
-    private $logger;
-
-    /**
-     * Validator instance
-     *
-     * @var BP_Export_Import_Validator|null
-     */
-    private $validator;
-
-    /**
-     * Field ID cache for XProfile fields
-     *
-     * @var array
-     */
-    private $field_id_cache = array();
-
-    /**
-     * Constructor
-     */
-    public function __construct() {
-        $this->batch_size = get_option('bp_export_import_export_batch_size', 500);
-        $this->progress = bp_export_import()->get_component('progress');
-        $this->logger = bp_export_import()->get_component('logger');
-        $this->validator = bp_export_import()->get_component('validator');
-        
-        $this->setup_hooks();
-    }
-
-    /**
-     * Setup WordPress hooks
-     */
-    private function setup_hooks() {
-        add_action('admin_init', array($this, 'handle_export_request'));
-        add_action('wp_ajax_bp_export_users', array($this, 'ajax_export_users'));
-    }
-
-    /**
-     * Handle export request from admin form
-     */
-    public function handle_export_request() {
-        if (isset($_POST['bp_export_import_export']) && 
-            check_admin_referer('bp_export_import_export_nonce', '_wpnonce_bp_export_import_export')) {
-            
-            // Check user permissions
-            if (!current_user_can('export') && !current_user_can('manage_options')) {
-                wp_die(__('You do not have permission to export data.', 'bp-export-import'));
-            }
-            
-            // Validate export options
-            $validation_result = $this->validate_export_options($_POST);
-            if (is_wp_error($validation_result)) {
-                wp_die($validation_result->get_error_message());
-            }
-            
-            $this->export_users();
-        }
-    }
-
-    /**
-     * AJAX handler for export requests
-     */
-    public function ajax_export_users() {
-        check_ajax_referer('bp_export_import_ajax', 'nonce');
-        
-        if (!current_user_can('export') && !current_user_can('manage_options')) {
-            wp_send_json_error(__('Permission denied.', 'bp-export-import'));
-        }
-
-        // Get export settings from AJAX request
-        $settings = isset($_POST['settings']) ? $_POST['settings'] : array();
-        
-        // Validate settings
-        $validation_result = $this->validate_export_options($settings);
-        if (is_wp_error($validation_result)) {
-            wp_send_json_error($validation_result->get_error_message());
-        }
-
-        // Start export process
-        $operation_id = $this->progress->generate_operation_id('export');
-        $total_users = $this->get_total_user_count($settings);
-        
-        $this->progress->start_operation($operation_id, 'export', $total_users, $settings);
-        
-        wp_send_json_success(array(
-            'operation_id' => $operation_id,
-            'message' => __('Export started successfully.', 'bp-export-import')
-        ));
-    }
-
-    /**
-     * Validate export options
-     *
-     * @param array $options Export options.
-     * @return true|WP_Error
-     */
-    private function validate_export_options($options) {
-        // Validate format
-        $format = isset($options['export_format']) ? sanitize_text_field($options['export_format']) : 'csv';
-        if (!in_array($format, array('csv', 'json', 'xml'))) {
-            return new WP_Error('invalid_format', __('Invalid export format.', 'bp-export-import'));
-        }
-
-        // Check if at least one field type is selected
-        $has_xprofile = !empty($options['xprofile_fields']);
-        $has_meta = !empty($options['user_meta_keys']);
-        
-        if (!$has_xprofile && !$has_meta) {
-            return new WP_Error('no_fields', __('Please select at least one field to export.', 'bp-export-import'));
-        }
-
-        // Validate user roles if specified
-        if (!empty($options['roles'])) {
-            $valid_roles = wp_roles()->get_names();
-            foreach ($options['roles'] as $role) {
-                if (!array_key_exists($role, $valid_roles)) {
-                    return new WP_Error('invalid_role', sprintf(
-                        __('Invalid user role: %s', 'bp-export-import'),
-                        $role
-                    ));
-                }
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Main export function
-     */
-    public function export_users() {
-        // Increase memory and time limits
-        bp_export_import_increase_memory_limit('512M');
-        bp_export_import_increase_time_limit(300);
-        
-        $format = isset($_POST['export_format']) ? sanitize_text_field($_POST['export_format']) : 'csv';
-        $operation_id = 'export_' . time() . '_' . uniqid();
-        
-        // Get total user count for progress tracking
-        $total_users = $this->get_total_user_count($_POST);
-        
-        // Start progress tracking
-        if ($this->progress) {
-            $this->progress->start_operation($operation_id, 'export', $total_users, $_POST);
-        }
-        
-        // Log export start
-        if ($this->logger) {
-            $this->logger->log_operation_start($operation_id, 'export', $_POST);
-        }
-        
-        try {
-            switch ($format) {
-                case 'json':
-                    $this->export_as_json_stream($operation_id);
-                    break;
-                case 'xml':
-                    $this->export_as_xml_stream($operation_id);
-                    break;
-                case 'csv':
-                default:
-                    $this->export_as_csv_stream($operation_id);
-                    break;
-            }
-            
-            // Complete progress tracking
-            if ($this->progress) {
-                $this->progress->complete_operation($operation_id, 'completed');
-            }
-            
-            // Log export completion
-            if ($this->logger) {
-                $this->logger->log_operation_complete($operation_id, 'export');
-            }
-            
-        } catch (Exception $e) {
-            // Handle export error
-            if ($this->progress) {
-                $this->progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
-            }
-            
-            if ($this->logger) {
-                $this->logger->log_operation_error($operation_id, 'export', $e->getMessage());
-            }
-            
-            wp_die(__('Export failed. Please check the error logs.', 'bp-export-import'));
-        }
-    }
-
-    /**
-     * Get total user count for export
-     *
-     * @param array $settings Export settings.
-     * @return int Total user count.
-     */
-    private function get_total_user_count($settings = array()) {
-        $args = array(
-            'count_total' => true,
-            'fields' => 'ID'
-        );
-
-        // Add role filter if specified
-        if (!empty($settings['roles'])) {
-            $args['role__in'] = array_map('sanitize_text_field', $settings['roles']);
-        }
-
-        // Add date filter if specified
-        if (!empty($settings['date_from'])) {
-            $args['date_query'] = array(
-                array(
-                    'after' => sanitize_text_field($settings['date_from']),
-                    'inclusive' => true,
-                ),
-            );
-        }
-
-        if (!empty($settings['date_to'])) {
-            if (!isset($args['date_query'])) {
-                $args['date_query'] = array();
-            }
-            $args['date_query'][] = array(
-                'before' => sanitize_text_field($settings['date_to']),
-                'inclusive' => true,
-            );
-        }
-
-        $user_query = new WP_User_Query($args);
-        return $user_query->get_total();
-    }
-
-    /**
-     * Get users batch for export
-     *
-     * @param int   $page     Page number.
-     * @param array $settings Export settings.
-     * @return array Array of user objects.
-     */
-    private function get_users_batch($page = 1, $settings = array()) {
-        $args = array(
-            'fields'   => 'all',
-            'number'   => $this->batch_size,
-            'paged'    => $page,
-            'orderby'  => 'ID',
-            'order'    => 'ASC'
-        );
-
-        // Add role filter if specified
-        if (!empty($settings['roles'])) {
-            $args['role__in'] = array_map('sanitize_text_field', $settings['roles']);
-        }
-
-        // Add date filter if specified
-        if (!empty($settings['date_from'])) {
-            $args['date_query'] = array(
-                array(
-                    'after' => sanitize_text_field($settings['date_from']),
-                    'inclusive' => true,
-                ),
-            );
-        }
-
-        if (!empty($settings['date_to'])) {
-            if (!isset($args['date_query'])) {
-                $args['date_query'] = array();
-            }
-            $args['date_query'][] = array(
-                'before' => sanitize_text_field($settings['date_to']),
-                'inclusive' => true,
-            );
-        }
-
-        $user_query = new WP_User_Query($args);
-        return $user_query->get_results();
-    }
-
-    /**
-     * Export users as CSV with streaming
-     *
-     * @param string $operation_id Operation ID for progress tracking.
-     */
-    private function export_as_csv_stream($operation_id) {
-        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.csv';
-        
-        // Set headers for file download
-        header('Content-Type: text/csv; charset=utf-8');
-        header('Content-Disposition: attachment; filename=' . $filename);
-        header('Cache-Control: no-cache, must-revalidate');
-        header('Pragma: no-cache');
-        
-        // Open output stream
-        $output = fopen('php://output', 'w');
-        
-        // Add BOM for proper UTF-8 encoding in Excel
-        fwrite($output, "\xEF\xBB\xBF");
-        
-        $page = 1;
-        $processed = 0;
-        $headers_written = false;
-        
-        do {
-            $users = $this->get_users_batch($page, $_POST);
-            
-            if (empty($users)) {
-                break;
-            }
-            
-            foreach ($users as $user) {
-                $row_data = $this->prepare_user_data($user, $_POST);
-                
-                // Write headers only once
-                if (!$headers_written) {
-                    fputcsv($output, array_keys($row_data));
-                    $headers_written = true;
-                }
-                
-                fputcsv($output, array_values($row_data));
-                $processed++;
-                
-                // Clear row data immediately after use
-                unset($row_data);
-                
-                // Update progress periodically
-                if ($processed % 50 === 0 && $this->progress) {
-                    $this->progress->update_progress($operation_id, $processed);
-                }
-            }
-            
-            // Clear users array after processing
-            unset($users);
-            
-            // Flush output buffer to prevent memory issues
-            if (ob_get_level()) {
-                ob_flush();
-            }
-            flush();
-            
-            $page++;
-            
-        } while ($page <= 1000); // Safety limit to prevent infinite loops
-        
-        // Final progress update
-        if ($this->progress) {
-            $this->progress->update_progress($operation_id, $processed);
-        }
-        
-        fclose($output);
-        exit;
-    }
-
-    /**
-     * Export users as JSON with streaming
-     *
-     * @param string $operation_id Operation ID for progress tracking.
-     */
-    private function export_as_json_stream($operation_id) {
-        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.json';
-        
-        header('Content-Type: application/json; charset=utf-8');
-        header('Content-Disposition: attachment; filename=' . $filename);
-        header('Cache-Control: no-cache, must-revalidate');
-        header('Pragma: no-cache');
-        
-        echo '{"users":[';
-        
-        $page = 1;
-        $processed = 0;
-        $first_user = true;
-        
-        do {
-            $users = $this->get_users_batch($page, $_POST);
-            
-            if (empty($users)) {
-                break;
-            }
-            
-            foreach ($users as $user) {
-                if (!$first_user) {
-                    echo ',';
-                }
-                
-                $user_data = $this->prepare_user_data($user, $_POST);
-                echo wp_json_encode($user_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-                
-                // Clear user data immediately
-                unset($user_data);
-                
-                $first_user = false;
-                $processed++;
-                
-                // Update progress periodically
-                if ($processed % 50 === 0 && $this->progress) {
-                    $this->progress->update_progress($operation_id, $processed);
-                }
-                
-                // Flush output
-                if (ob_get_level()) {
-                    ob_flush();
-                }
-                flush();
-            }
-            
-            // Clear users array
-            unset($users);
-            $page++;
-            
-        } while ($page <= 1000); // Safety limit
-        
-        // Final progress update
-        if ($this->progress) {
-            $this->progress->update_progress($operation_id, $processed);
-        }
-        
-        echo ']}';
-        exit;
-    }
-
-    /**
      * Export users as XML with streaming
      *
      * @param string $operation_id Operation ID for progress tracking.
@@ -492,8 +58,11 @@ class BP_Export_Import_Export {
                 $processed++;
                 
                 // Update progress periodically
-                if ($processed % 50 === 0 && $this->progress) {
-                    $this->progress->update_progress($operation_id, $processed);
+                if ($processed % 50 === 0) {
+                    $progress = $this->get_progress();
+                    if ($progress) {
+                        $progress->update_progress($operation_id, $processed);
+                    }
                 }
                 
                 // Flush output
@@ -510,8 +79,9 @@ class BP_Export_Import_Export {
         } while ($page <= 1000); // Safety limit
         
         // Final progress update
-        if ($this->progress) {
-            $this->progress->update_progress($operation_id, $processed);
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->update_progress($operation_id, $processed);
         }
         
         echo '</users>';
@@ -801,7 +371,8 @@ class BP_Export_Import_Export {
             return false;
         }
         
-        $operation_id = $this->progress->generate_operation_id('export');
+        $progress = $this->get_progress();
+        $operation_id = $progress->generate_operation_id('export');
         
         if ($background_process->queue_export($operation_id, $settings)) {
             return $operation_id;
@@ -809,4 +380,473 @@ class BP_Export_Import_Export {
         
         return false;
     }
-}
+} batch size
+     *
+     * @var int
+     */
+    private $batch_size = 500;
+
+    /**
+     * Progress tracker
+     *
+     * @var BP_Export_Import_Progress|null
+     */
+    private $progress;
+
+    /**
+     * Logger instance
+     *
+     * @var BP_Export_Import_Logger|null
+     */
+    private $logger;
+
+    /**
+     * Validator instance
+     *
+     * @var BP_Export_Import_Validator|null
+     */
+    private $validator;
+
+    /**
+     * Field ID cache for XProfile fields
+     *
+     * @var array
+     */
+    private $field_id_cache = array();
+
+    /**
+     * Constructor - MINIMAL initialization
+     */
+    public function __construct() {
+        $this->batch_size = get_option('bp_export_import_export_batch_size', 500);
+        
+        // DON'T auto-load components or register hooks
+        // Only load when explicitly needed
+        
+        // DON'T call setup_hooks() - let the calling code decide when to register hooks
+    }
+
+    /**
+     * Setup WordPress hooks - call this only when needed
+     */
+    public function setup_hooks() {
+        add_action('admin_init', array($this, 'handle_export_request'));
+        add_action('wp_ajax_bp_export_users', array($this, 'ajax_export_users'));
+    }
+
+    /**
+     * Get components only when needed
+     */
+    private function get_progress() {
+        if (!$this->progress) {
+            $this->progress = bp_export_import()->get_component('progress');
+        }
+        return $this->progress;
+    }
+
+    private function get_logger() {
+        if (!$this->logger) {
+            $this->logger = bp_export_import()->get_component('logger');
+        }
+        return $this->logger;
+    }
+
+    private function get_validator() {
+        if (!$this->validator) {
+            $this->validator = bp_export_import()->get_component('validator');
+        }
+        return $this->validator;
+    }
+
+    /**
+     * Handle export request from admin form
+     */
+    public function handle_export_request() {
+        if (isset($_POST['bp_export_import_export']) && 
+            check_admin_referer('bp_export_import_export_nonce', '_wpnonce_bp_export_import_export')) {
+            
+            // Check user permissions
+            if (!current_user_can('export') && !current_user_can('manage_options')) {
+                wp_die(__('You do not have permission to export data.', 'bp-export-import'));
+            }
+            
+            // Validate export options
+            $validation_result = $this->validate_export_options($_POST);
+            if (is_wp_error($validation_result)) {
+                wp_die($validation_result->get_error_message());
+            }
+            
+            $this->export_users();
+        }
+    }
+
+    /**
+     * AJAX handler for export requests
+     */
+    public function ajax_export_users() {
+        check_ajax_referer('bp_export_import_ajax', 'nonce');
+        
+        if (!current_user_can('export') && !current_user_can('manage_options')) {
+            wp_send_json_error(__('Permission denied.', 'bp-export-import'));
+        }
+
+        // Get export settings from AJAX request
+        $settings = isset($_POST['settings']) ? $_POST['settings'] : array();
+        
+        // Validate settings
+        $validation_result = $this->validate_export_options($settings);
+        if (is_wp_error($validation_result)) {
+            wp_send_json_error($validation_result->get_error_message());
+        }
+
+        // Start export process
+        $progress = $this->get_progress();
+        $operation_id = $progress->generate_operation_id('export');
+        $total_users = $this->get_total_user_count($settings);
+        
+        $progress->start_operation($operation_id, 'export', $total_users, $settings);
+        
+        wp_send_json_success(array(
+            'operation_id' => $operation_id,
+            'message' => __('Export started successfully.', 'bp-export-import')
+        ));
+    }
+
+    /**
+     * Validate export options
+     *
+     * @param array $options Export options.
+     * @return true|WP_Error
+     */
+    private function validate_export_options($options) {
+        // Validate format
+        $format = isset($options['export_format']) ? sanitize_text_field($options['export_format']) : 'csv';
+        if (!in_array($format, array('csv', 'json', 'xml'))) {
+            return new WP_Error('invalid_format', __('Invalid export format.', 'bp-export-import'));
+        }
+
+        // Check if at least one field type is selected
+        $has_xprofile = !empty($options['xprofile_fields']);
+        $has_meta = !empty($options['user_meta_keys']);
+        
+        if (!$has_xprofile && !$has_meta) {
+            return new WP_Error('no_fields', __('Please select at least one field to export.', 'bp-export-import'));
+        }
+
+        // Validate user roles if specified
+        if (!empty($options['roles'])) {
+            $valid_roles = wp_roles()->get_names();
+            foreach ($options['roles'] as $role) {
+                if (!array_key_exists($role, $valid_roles)) {
+                    return new WP_Error('invalid_role', sprintf(
+                        __('Invalid user role: %s', 'bp-export-import'),
+                        $role
+                    ));
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Main export function
+     */
+    public function export_users() {
+        // Increase memory and time limits
+        bp_export_import_increase_memory_limit('512M');
+        bp_export_import_increase_time_limit(300);
+        
+        $format = isset($_POST['export_format']) ? sanitize_text_field($_POST['export_format']) : 'csv';
+        $operation_id = 'export_' . time() . '_' . uniqid();
+        
+        // Get total user count for progress tracking
+        $total_users = $this->get_total_user_count($_POST);
+        
+        // Start progress tracking
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->start_operation($operation_id, 'export', $total_users, $_POST);
+        }
+        
+        // Log export start
+        $logger = $this->get_logger();
+        if ($logger) {
+            $logger->log_operation_start($operation_id, 'export', $_POST);
+        }
+        
+        try {
+            switch ($format) {
+                case 'json':
+                    $this->export_as_json_stream($operation_id);
+                    break;
+                case 'xml':
+                    $this->export_as_xml_stream($operation_id);
+                    break;
+                case 'csv':
+                default:
+                    $this->export_as_csv_stream($operation_id);
+                    break;
+            }
+            
+            // Complete progress tracking
+            if ($progress) {
+                $progress->complete_operation($operation_id, 'completed');
+            }
+            
+            // Log export completion
+            if ($logger) {
+                $logger->log_operation_complete($operation_id, 'export');
+            }
+            
+        } catch (Exception $e) {
+            // Handle export error
+            if ($progress) {
+                $progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
+            }
+            
+            if ($logger) {
+                $logger->log_operation_error($operation_id, 'export', $e->getMessage());
+            }
+            
+            wp_die(__('Export failed. Please check the error logs.', 'bp-export-import'));
+        }
+    }
+
+    /**
+     * Get total user count for export
+     *
+     * @param array $settings Export settings.
+     * @return int Total user count.
+     */
+    private function get_total_user_count($settings = array()) {
+        $args = array(
+            'count_total' => true,
+            'fields' => 'ID'
+        );
+
+        // Add role filter if specified
+        if (!empty($settings['roles'])) {
+            $args['role__in'] = array_map('sanitize_text_field', $settings['roles']);
+        }
+
+        // Add date filter if specified
+        if (!empty($settings['date_from'])) {
+            $args['date_query'] = array(
+                array(
+                    'after' => sanitize_text_field($settings['date_from']),
+                    'inclusive' => true,
+                ),
+            );
+        }
+
+        if (!empty($settings['date_to'])) {
+            if (!isset($args['date_query'])) {
+                $args['date_query'] = array();
+            }
+            $args['date_query'][] = array(
+                'before' => sanitize_text_field($settings['date_to']),
+                'inclusive' => true,
+            );
+        }
+
+        $user_query = new WP_User_Query($args);
+        return $user_query->get_total();
+    }
+
+    /**
+     * Get users batch for export
+     *
+     * @param int   $page     Page number.
+     * @param array $settings Export settings.
+     * @return array Array of user objects.
+     */
+    private function get_users_batch($page = 1, $settings = array()) {
+        $args = array(
+            'fields'   => 'all',
+            'number'   => $this->batch_size,
+            'paged'    => $page,
+            'orderby'  => 'ID',
+            'order'    => 'ASC'
+        );
+
+        // Add role filter if specified
+        if (!empty($settings['roles'])) {
+            $args['role__in'] = array_map('sanitize_text_field', $settings['roles']);
+        }
+
+        // Add date filter if specified
+        if (!empty($settings['date_from'])) {
+            $args['date_query'] = array(
+                array(
+                    'after' => sanitize_text_field($settings['date_from']),
+                    'inclusive' => true,
+                ),
+            );
+        }
+
+        if (!empty($settings['date_to'])) {
+            if (!isset($args['date_query'])) {
+                $args['date_query'] = array();
+            }
+            $args['date_query'][] = array(
+                'before' => sanitize_text_field($settings['date_to']),
+                'inclusive' => true,
+            );
+        }
+
+        $user_query = new WP_User_Query($args);
+        return $user_query->get_results();
+    }
+
+    /**
+     * Export users as CSV with streaming
+     *
+     * @param string $operation_id Operation ID for progress tracking.
+     */
+    private function export_as_csv_stream($operation_id) {
+        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.csv';
+        
+        // Set headers for file download
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=' . $filename);
+        header('Cache-Control: no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        
+        // Open output stream
+        $output = fopen('php://output', 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fwrite($output, "\xEF\xBB\xBF");
+        
+        $page = 1;
+        $processed = 0;
+        $headers_written = false;
+        
+        do {
+            $users = $this->get_users_batch($page, $_POST);
+            
+            if (empty($users)) {
+                break;
+            }
+            
+            foreach ($users as $user) {
+                $row_data = $this->prepare_user_data($user, $_POST);
+                
+                // Write headers only once
+                if (!$headers_written) {
+                    fputcsv($output, array_keys($row_data));
+                    $headers_written = true;
+                }
+                
+                fputcsv($output, array_values($row_data));
+                $processed++;
+                
+                // Clear row data immediately after use
+                unset($row_data);
+                
+                // Update progress periodically
+                if ($processed % 50 === 0) {
+                    $progress = $this->get_progress();
+                    if ($progress) {
+                        $progress->update_progress($operation_id, $processed);
+                    }
+                }
+            }
+            
+            // Clear users array after processing
+            unset($users);
+            
+            // Flush output buffer to prevent memory issues
+            if (ob_get_level()) {
+                ob_flush();
+            }
+            flush();
+            
+            $page++;
+            
+        } while ($page <= 1000); // Safety limit to prevent infinite loops
+        
+        // Final progress update
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->update_progress($operation_id, $processed);
+        }
+        
+        fclose($output);
+        exit;
+    }
+
+    /**
+     * Export users as JSON with streaming
+     *
+     * @param string $operation_id Operation ID for progress tracking.
+     */
+    private function export_as_json_stream($operation_id) {
+        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.json';
+        
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename=' . $filename);
+        header('Cache-Control: no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        
+        echo '{"users":[';
+        
+        $page = 1;
+        $processed = 0;
+        $first_user = true;
+        
+        do {
+            $users = $this->get_users_batch($page, $_POST);
+            
+            if (empty($users)) {
+                break;
+            }
+            
+            foreach ($users as $user) {
+                if (!$first_user) {
+                    echo ',';
+                }
+                
+                $user_data = $this->prepare_user_data($user, $_POST);
+                echo wp_json_encode($user_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                
+                // Clear user data immediately
+                unset($user_data);
+                
+                $first_user = false;
+                $processed++;
+                
+                // Update progress periodically
+                if ($processed % 50 === 0) {
+                    $progress = $this->get_progress();
+                    if ($progress) {
+                        $progress->update_progress($operation_id, $processed);
+                    }
+                }
+                
+                // Flush output
+                if (ob_get_level()) {
+                    ob_flush();
+                }
+                flush();
+            }
+            
+            // Clear users array
+            unset($users);
+            $page++;
+            
+        } while ($page <= 1000); // Safety limit
+        
+        // Final progress update
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->update_progress($operation_id, $processed);
+        }
+        
+        echo ']}';
+        exit;
+    }
+
+    /**
+     * Export

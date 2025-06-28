@@ -51,29 +51,31 @@ class BP_Export_Import_Progress {
     private $ajax_hooks_registered = false;
 
     /**
-     * Constructor
+     * Constructor - MINIMAL initialization only
      */
     public function __construct() {
         global $wpdb;
         $this->table_name = $wpdb->prefix . 'bp_export_import_operations';
         
-        // Only register AJAX hooks if doing AJAX
-        if (wp_doing_ajax() && !$this->ajax_hooks_registered) {
-            $this->setup_ajax_hooks();
-            $this->ajax_hooks_registered = true;
-        }
-        
-        // Non-AJAX hooks
-        add_action('bp_export_import_cleanup', array($this, 'cleanup_old_operations'));
+        // DON'T register ANY hooks on construction
+        // Only register when actually needed
     }
 
     /**
-     * Setup AJAX hooks only when needed
+     * Setup AJAX hooks only when explicitly called
      */
-    private function setup_ajax_hooks() {
-        add_action('wp_ajax_bp_get_progress', array($this, 'ajax_get_progress'));
-        add_action('wp_ajax_bp_cancel_operation', array($this, 'ajax_cancel_operation'));
-        add_action('wp_ajax_bp_get_operation_stats', array($this, 'ajax_get_operation_stats'));
+    public function setup_ajax_hooks() {
+        if ($this->ajax_hooks_registered) {
+            return;
+        }
+        
+        // Only register if doing AJAX
+        if (wp_doing_ajax()) {
+            add_action('wp_ajax_bp_get_progress', array($this, 'ajax_get_progress'));
+            add_action('wp_ajax_bp_cancel_operation', array($this, 'ajax_cancel_operation'));
+            add_action('wp_ajax_bp_get_operation_stats', array($this, 'ajax_get_operation_stats'));
+            $this->ajax_hooks_registered = true;
+        }
     }
 
     /**
@@ -295,35 +297,49 @@ class BP_Export_Import_Progress {
     }
 
     /**
-     * Get active operations for a user (OPTIMIZED)
+     * Get active operations for a user - LIGHTWEIGHT VERSION
      *
      * @param int $user_id User ID (0 for current user).
      * @return array Array of active operation IDs.
      */
     public function get_active_operations($user_id = 0) {
+        // DON'T do database queries unless absolutely necessary
+        if (!wp_doing_ajax()) {
+            return array(); // Return empty for regular page loads
+        }
+        
         if ($user_id === 0) {
             $user_id = get_current_user_id();
         }
 
-        global $wpdb;
+        $active_operations = array();
         
-        // CRITICAL FIX: Use more efficient query with proper limits
+        // Use a simple cache to avoid repeated queries
+        static $cache = array();
+        $cache_key = 'active_ops_' . $user_id;
+        
+        if (isset($cache[$cache_key])) {
+            return $cache[$cache_key];
+        }
+        
+        // Only check a few recent transients, not all
+        global $wpdb;
         $prefix = self::PROGRESS_PREFIX;
-        $transient_names = $wpdb->get_col($wpdb->prepare(
+        
+        // Get only the 5 most recent transients to prevent memory issues
+        $recent_transients = $wpdb->get_col($wpdb->prepare(
             "SELECT SUBSTRING(option_name, %d) as operation_id
              FROM {$wpdb->options} 
              WHERE option_name LIKE %s 
              AND option_name NOT LIKE %s
+             ORDER BY option_id DESC
              LIMIT 5", // Very small limit
             strlen('_transient_' . $prefix) + 1,
             '_transient_' . $prefix . '%',
             '%_timeout'
         ));
 
-        $active_operations = array();
-        
-        // Process maximum 5 operations to prevent memory issues
-        foreach (array_slice($transient_names, 0, 5) as $operation_id) {
+        foreach ($recent_transients as $operation_id) {
             $progress_data = get_transient($prefix . $operation_id);
             
             if (is_array($progress_data) && 
@@ -341,6 +357,7 @@ class BP_Export_Import_Progress {
             }
         }
 
+        $cache[$cache_key] = $active_operations;
         return $active_operations;
     }
 

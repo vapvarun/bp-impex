@@ -111,6 +111,9 @@ class BP_Export_Import_Loader {
         // Main plugin class
         require_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import.php';
         
+        // REMOVE the problematic frontend include - it doesn't exist and causes errors
+        // require_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import-frontend.php';
+        
         // CLI integration (only if WP CLI is available)
         if (defined('WP_CLI') && WP_CLI) {
             require_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import-cli.php';

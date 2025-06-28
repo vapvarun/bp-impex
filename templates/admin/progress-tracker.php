@@ -13,6 +13,11 @@ if (!defined('ABSPATH')) {
 // Get plugin components
 $progress = bp_export_import()->get_component('progress');
 
+// Set up AJAX hooks only when on this page
+if ($progress) {
+    $progress->setup_ajax_hooks();
+}
+
 // Get current user ID for filtering (admins can see all operations)
 $user_id = current_user_can('manage_options') ? 0 : get_current_user_id();
 
@@ -125,13 +130,6 @@ if (isset($_POST['cancel_operation']) && check_admin_referer('bp_export_import_p
                             <div class="current-step">
                                 <strong><?php esc_html_e('Current Step:', 'bp-export-import'); ?></strong>
                                 <span class="step-text"><?php echo esc_html($operation_progress['current_step']); ?></span>
-                            </div>
-                            <?php endif; ?>
-                            
-                            <?php if ($eta) : ?>
-                            <div class="eta-info">
-                                <strong><?php esc_html_e('Estimated Time Remaining:', 'bp-export-import'); ?></strong>
-                                <span class="eta-time"><?php echo esc_html($eta); ?></span>
                             </div>
                             <?php endif; ?>
                             
@@ -379,18 +377,6 @@ jQuery(document).ready(function($) {
             $stepContainer.find('.step-text').text(progressData.current_step);
         }
         
-        // Update ETA
-        if (progressData.eta) {
-            var $etaContainer = $operation.find('.eta-info');
-            if ($etaContainer.length === 0) {
-                $operation.find('.progress-section').append(
-                    '<div class="eta-info"><strong><?php esc_js_e('Estimated Time Remaining:', 'bp-export-import'); ?></strong> <span class="eta-time"></span></div>'
-                );
-                $etaContainer = $operation.find('.eta-info');
-            }
-            $etaContainer.find('.eta-time').text(progressData.eta);
-        }
-        
         // Update error count
         if (progressData.error_count > 0) {
             var $errorContainer = $operation.find('.operation-errors');
@@ -505,11 +491,6 @@ jQuery(document).ready(function($) {
     color: #f57c00;
 }
 
-.status-paused {
-    background: #f3e5f5;
-    color: #7b1fa2;
-}
-
 .status-completed {
     background: #e8f5e8;
     color: #2e7d32;
@@ -520,111 +501,6 @@ jQuery(document).ready(function($) {
     color: #c62828;
 }
 
-.status-cancelled {
-    background: #f5f5f5;
-    color: #616161;
-}
-
-.operation-elapsed {
-    color: #666;
-    font-style: italic;
-}
-
-.progress-section {
-    margin-top: 15px;
-}
-
-.progress-bar-container {
-    margin-bottom: 15px;
-}
-
-.progress-bar {
-    width: 100%;
-    height: 24px;
-    background: #e1e1e1;
-    border-radius: 12px;
-    overflow: hidden;
-    margin-bottom: 8px;
-}
-
-.progress-fill {
-    height: 100%;
-    background: linear-gradient(90deg, #0073aa, #005a87);
-    transition: width 0.5s ease;
-    border-radius: 12px;
-}
-
-.progress-stats {
-    display: flex;
-    justify-content: space-between;
-    font-size: 13px;
-}
-
-.progress-percentage {
-    font-weight: bold;
-    color: #0073aa;
-}
-
-.current-step,
-.eta-info,
-.operation-errors {
-    margin-bottom: 10px;
-    font-size: 13px;
-}
-
-.current-step strong,
-.eta-info strong,
-.operation-errors strong {
-    color: #333;
-}
-
-.step-text,
-.eta-time {
-    color: #666;
-    font-style: italic;
-}
-
-.error-count {
-    color: #dc3232;
-    font-weight: bold;
-}
-
-.show-errors {
-    margin-left: 10px;
-    font-size: 12px;
-    text-decoration: none;
-}
-
-.error-details {
-    margin-top: 10px;
-    padding: 10px;
-    background: #fff;
-    border: 1px solid #e1e1e1;
-    border-radius: 4px;
-}
-
-.error-details ul {
-    margin: 0;
-    padding-left: 20px;
-}
-
-.error-details li {
-    color: #dc3232;
-    font-size: 12px;
-    margin-bottom: 3px;
-}
-
-.cancel-btn {
-    background: #dc3232;
-    color: #fff;
-    border-color: #dc3232;
-}
-
-.cancel-btn:hover {
-    background: #c62828;
-    border-color: #c62828;
-}
-
 .no-active-operations {
     text-align: center;
     padding: 60px 20px;
@@ -632,51 +508,6 @@ jQuery(document).ready(function($) {
     border: 1px solid #c3c4c7;
     border-radius: 4px;
     margin-bottom: 20px;
-}
-
-.no-operations-icon {
-    font-size: 48px;
-    margin-bottom: 15px;
-}
-
-.no-active-operations h2 {
-    color: #666;
-    margin-bottom: 10px;
-}
-
-.quick-actions {
-    margin-top: 20px;
-}
-
-.quick-actions .button {
-    margin: 0 5px;
-}
-
-.operations-table-container {
-    margin-top: 15px;
-    overflow-x: auto;
-}
-
-.operation-type {
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 11px;
-    font-weight: bold;
-    text-transform: uppercase;
-}
-
-.operation-export {
-    background: #e7f5ff;
-    color: #0073aa;
-}
-
-.operation-import {
-    background: #f0f8e7;
-    color: #46b450;
-}
-
-.no-errors {
-    color: #46b450;
 }
 
 .stats-grid {
@@ -706,31 +537,5 @@ jQuery(document).ready(function($) {
     font-size: 13px;
     color: #666;
     text-transform: uppercase;
-}
-
-/* Responsive design */
-@media (max-width: 768px) {
-    .operation-header {
-        flex-direction: column;
-        gap: 15px;
-    }
-    
-    .operation-meta {
-        flex-direction: column;
-        gap: 5px;
-    }
-    
-    .progress-stats {
-        flex-direction: column;
-        gap: 5px;
-    }
-    
-    .stats-grid {
-        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    }
-    
-    .stat-number {
-        font-size: 24px;
-    }
 }
 </style>

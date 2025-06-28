@@ -10,9 +10,17 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Get plugin components
+// Get plugin components and ensure hooks are set up
 $exporter = bp_export_import()->get_component('export');
 $field_mapping = bp_export_import()->get_component('field_mapping');
+
+// Set up hooks only when on this page
+if ($exporter) {
+    $exporter->setup_hooks();
+}
+if ($field_mapping) {
+    $field_mapping->setup_hooks();
+}
 
 // Get available fields
 $xprofile_fields = array();
