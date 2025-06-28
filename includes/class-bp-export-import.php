@@ -1,6 +1,6 @@
 <?php
 /**
- * BP Export Import Main Class
+ * BP Export Import Main Class - LAZY LOADING VERSION
  *
  * Main plugin class that initializes and manages all components
  *
@@ -17,16 +17,29 @@ class BP_Export_Import {
 
     /**
      * Single instance of the plugin
+     *
+     * @var BP_Export_Import|null
      */
     private static $instance = null;
 
     /**
      * Plugin components
+     *
+     * @var array
      */
     private $components = array();
 
     /**
+     * Components loaded flag
+     *
+     * @var bool
+     */
+    private $components_loaded = false;
+
+    /**
      * Plugin version
+     *
+     * @var string
      */
     const VERSION = '1.0.0';
 
@@ -47,7 +60,7 @@ class BP_Export_Import {
      */
     private function __construct() {
         $this->init_hooks();
-        $this->init_components();
+        // DON'T load components immediately - only when needed
     }
 
     /**
@@ -58,57 +71,102 @@ class BP_Export_Import {
         add_action('admin_enqueue_scripts', array($this, 'admin_scripts'));
         add_action('wp_enqueue_scripts', array($this, 'frontend_scripts'));
         
-        // AJAX hooks
-        add_action('wp_ajax_bp_get_progress', array($this, 'ajax_get_progress'));
-        add_action('wp_ajax_bp_cancel_operation', array($this, 'ajax_cancel_operation'));
-        add_action('wp_ajax_bp_load_more_logs', array($this, 'ajax_load_more_logs'));
-        add_action('wp_ajax_bp_get_dashboard_stats', array($this, 'ajax_get_dashboard_stats'));
-        add_action('wp_ajax_bp_get_operations_status', array($this, 'ajax_get_operations_status'));
+        // ONLY register AJAX hooks when doing AJAX - NOT on every page load
+        if (wp_doing_ajax()) {
+            add_action('wp_ajax_bp_get_progress', array($this, 'ajax_get_progress'));
+            add_action('wp_ajax_bp_cancel_operation', array($this, 'ajax_cancel_operation'));
+            add_action('wp_ajax_bp_get_dashboard_stats', array($this, 'ajax_get_dashboard_stats'));
+            add_action('wp_ajax_bp_get_operations_status', array($this, 'ajax_get_operations_status'));
+        }
         
         // Cleanup hook
         add_action('bp_export_import_cleanup_transient', array($this, 'cleanup_transient'));
     }
 
     /**
+     * Load components only when needed (lazy loading)
+     */
+    private function maybe_load_components() {
+        if ($this->components_loaded) {
+            return;
+        }
+
+        // Only load when actually needed
+        if (!wp_doing_ajax() && !is_admin()) {
+            return;
+        }
+
+        $this->init_components();
+        $this->components_loaded = true;
+    }
+
+    /**
      * Initialize plugin components
      */
     private function init_components() {
-        // Initialize core components first
-        $this->components['logger'] = new BP_Export_Import_Logger();
-        $this->components['validator'] = new BP_Export_Import_Validator();
-        $this->components['progress'] = new BP_Export_Import_Progress();
+        // Load minimal components first
+        if (!isset($this->components['logger'])) {
+            $this->components['logger'] = new BP_Export_Import_Logger();
+        }
         
-        // Initialize functional components
-        $this->components['field_mapping'] = new BP_Export_Import_Field_Mapping();
-        $this->components['export'] = new BP_Export_Import_Export();
-        $this->components['import'] = new BP_Export_Import_Import();
+        if (!isset($this->components['validator'])) {
+            $this->components['validator'] = new BP_Export_Import_Validator();
+        }
         
-        // Initialize background processing
-        $this->components['background_process'] = new BP_Export_Import_Background_Process();
-        
-        // Initialize frontend component
-        $this->components['frontend'] = new BP_Export_Import_Frontend();
-        
-        // Setup AJAX hooks for progress tracking
-        $this->setup_progress_ajax();
+        if (!isset($this->components['progress'])) {
+            $this->components['progress'] = new BP_Export_Import_Progress();
+        }
     }
 
     /**
-     * Setup AJAX hooks for progress tracking
-     */
-    private function setup_progress_ajax() {
-        add_action('wp_ajax_bp_export_progress', array($this->components['progress'], 'get_export_progress'));
-        add_action('wp_ajax_bp_import_progress', array($this->components['progress'], 'get_import_progress'));
-    }
-
-    /**
-     * Get component instance
+     * Get component instance with lazy loading
      *
-     * @param string $component Component name
-     * @return mixed Component instance or null if not found
+     * @param string $component Component name.
+     * @return mixed Component instance or null if not found.
      */
     public function get_component($component) {
+        // Load components if needed
+        $this->maybe_load_components();
+        
+        // Load specific component if not already loaded
+        if (!isset($this->components[$component])) {
+            $this->load_specific_component($component);
+        }
+        
         return isset($this->components[$component]) ? $this->components[$component] : null;
+    }
+
+    /**
+     * Load a specific component on demand
+     *
+     * @param string $component Component name.
+     */
+    private function load_specific_component($component) {
+        switch ($component) {
+            case 'field_mapping':
+                if (!isset($this->components['field_mapping'])) {
+                    $this->components['field_mapping'] = new BP_Export_Import_Field_Mapping();
+                }
+                break;
+                
+            case 'export':
+                if (!isset($this->components['export'])) {
+                    $this->components['export'] = new BP_Export_Import_Export();
+                }
+                break;
+                
+            case 'import':
+                if (!isset($this->components['import'])) {
+                    $this->components['import'] = new BP_Export_Import_Import();
+                }
+                break;
+                
+            case 'background_process':
+                if (!isset($this->components['background_process'])) {
+                    $this->components['background_process'] = new BP_Export_Import_Background_Process();
+                }
+                break;
+        }
     }
 
     /**
@@ -124,6 +182,8 @@ class BP_Export_Import {
 
     /**
      * Enqueue admin scripts and styles
+     *
+     * @param string $hook The current admin page hook.
      */
     public function admin_scripts($hook) {
         // Only load on plugin pages
@@ -197,7 +257,7 @@ class BP_Export_Import {
     }
 
     /**
-     * AJAX handler for getting operation progress
+     * AJAX handler for getting progress
      */
     public function ajax_get_progress() {
         check_ajax_referer('bp_export_import_ajax', 'nonce');
@@ -208,18 +268,23 @@ class BP_Export_Import {
             wp_send_json_error(__('Invalid operation ID.', 'bp-export-import'));
         }
 
-        $progress = $this->components['progress']->get_progress($operation_id);
-        
+        $progress = $this->get_component('progress');
         if (!$progress) {
+            wp_send_json_error(__('Progress component not available.', 'bp-export-import'));
+        }
+
+        $progress_data = $progress->get_progress($operation_id);
+        
+        if (!$progress_data) {
             wp_send_json_error(__('Operation not found.', 'bp-export-import'));
         }
 
         // Security check
-        if ($progress['user_id'] !== get_current_user_id() && !current_user_can('manage_options')) {
+        if ($progress_data['user_id'] !== get_current_user_id() && !current_user_can('manage_options')) {
             wp_send_json_error(__('Permission denied.', 'bp-export-import'));
         }
 
-        wp_send_json_success($progress);
+        wp_send_json_success($progress_data);
     }
 
     /**
@@ -234,49 +299,27 @@ class BP_Export_Import {
             wp_send_json_error(__('Invalid operation ID.', 'bp-export-import'));
         }
 
-        $progress = $this->components['progress']->get_progress($operation_id);
-        
+        $progress = $this->get_component('progress');
         if (!$progress) {
+            wp_send_json_error(__('Progress component not available.', 'bp-export-import'));
+        }
+
+        $progress_data = $progress->get_progress($operation_id);
+        
+        if (!$progress_data) {
             wp_send_json_error(__('Operation not found.', 'bp-export-import'));
         }
 
         // Security check
-        if ($progress['user_id'] !== get_current_user_id() && !current_user_can('manage_options')) {
+        if ($progress_data['user_id'] !== get_current_user_id() && !current_user_can('manage_options')) {
             wp_send_json_error(__('Permission denied.', 'bp-export-import'));
         }
 
-        if ($this->components['progress']->cancel_operation($operation_id)) {
+        if ($progress->cancel_operation($operation_id)) {
             wp_send_json_success(__('Operation cancelled successfully.', 'bp-export-import'));
         } else {
             wp_send_json_error(__('Failed to cancel operation.', 'bp-export-import'));
         }
-    }
-
-    /**
-     * AJAX handler for loading more logs
-     */
-    public function ajax_load_more_logs() {
-        check_ajax_referer('bp_export_import_ajax', 'nonce');
-        
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error(__('Permission denied.', 'bp-export-import'));
-        }
-        
-        $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
-        $limit = 20;
-        
-        $logger = $this->get_component('logger');
-        if (!$logger) {
-            wp_send_json_error(__('Logger not available.', 'bp-export-import'));
-        }
-        
-        $entries = $logger->get_recent_entries($limit + $offset);
-        $new_entries = array_slice($entries, $offset, $limit);
-        
-        wp_send_json_success(array(
-            'entries' => $new_entries,
-            'has_more' => count($entries) > ($offset + $limit)
-        ));
     }
 
     /**
@@ -327,22 +370,23 @@ class BP_Export_Import {
     /**
      * Get plugin information
      *
-     * @return array Plugin information
+     * @return array Plugin information.
      */
     public function get_plugin_info() {
+        $this->maybe_load_components();
+        
         return array(
             'version' => self::VERSION,
             'name' => 'BP Export Import',
             'description' => __('A BuddyPress addon for exporting and importing user data with field mapping and WP CLI support.', 'bp-export-import'),
             'components' => array_keys($this->components),
-            'active_operations' => $this->components['progress']->get_active_operations(),
         );
     }
 
     /**
      * Check plugin requirements
      *
-     * @return bool|WP_Error True if requirements met, WP_Error otherwise
+     * @return bool|WP_Error True if requirements met, WP_Error otherwise.
      */
     public function check_requirements() {
         // Check if BuddyPress is active
@@ -452,10 +496,12 @@ class BP_Export_Import {
         wp_clear_scheduled_hook('bp_export_import_cleanup');
         wp_clear_scheduled_hook('bp_export_import_process_queue');
 
-        // Clean up active operations
-        $active_operations = $this->components['progress']->get_active_operations();
-        foreach ($active_operations as $operation_id) {
-            $this->components['progress']->cancel_operation($operation_id);
+        // Only clean up if components are loaded
+        if ($this->components_loaded && isset($this->components['progress'])) {
+            $active_operations = $this->components['progress']->get_active_operations();
+            foreach ($active_operations as $operation_id) {
+                $this->components['progress']->cancel_operation($operation_id);
+            }
         }
     }
 
@@ -493,8 +539,8 @@ class BP_Export_Import {
             'bp_export_import_enable_frontend_export' => true,
             'bp_export_import_max_file_size' => 52428800, // 50MB
             'bp_export_import_allowed_file_types' => array('csv', 'json', 'xml'),
-            'bp_export_import_export_batch_size' => 500,
-            'bp_export_import_import_batch_size' => 100,
+            'bp_export_import_export_batch_size' => 100, // Reduced from 500
+            'bp_export_import_import_batch_size' => 50,  // Reduced from 100
             'bp_export_import_cleanup_days' => 7,
             'bp_export_import_progress_retention_hours' => 24,
         );
@@ -540,16 +586,14 @@ class BP_Export_Import {
     /**
      * Get plugin status for dashboard
      *
-     * @return array Plugin status information
+     * @return array Plugin status information.
      */
     public function get_status() {
         return array(
             'version' => self::VERSION,
             'database_version' => get_option('bp_export_import_db_version', '0'),
             'requirements_met' => !is_wp_error($this->check_requirements()),
-            'active_operations' => count($this->components['progress']->get_active_operations()),
-            'logging_enabled' => $this->components['logger']->is_logging_enabled(),
-            'log_size' => $this->components['logger']->get_log_size(),
+            'components_loaded' => $this->components_loaded,
             'upload_dirs_writable' => $this->check_upload_dirs_writable(),
         );
     }
@@ -557,27 +601,12 @@ class BP_Export_Import {
     /**
      * Cleanup transient for completed operations
      *
-     * @param string $operation_id Operation ID
+     * @param string $operation_id Operation ID.
      */
     public function cleanup_transient($operation_id) {
-        if ($this->components['progress']) {
+        if ($this->components_loaded && isset($this->components['progress'])) {
             $this->components['progress']->cleanup_progress($operation_id);
         }
-    }
-
-    /**
-     * Get real-time operation updates for dashboard
-     *
-     * @return array Operation updates
-     */
-    public function get_operation_updates() {
-        $progress = $this->get_component('progress');
-        if (!$progress) {
-            return array();
-        }
-
-        $user_id = current_user_can('manage_options') ? 0 : get_current_user_id();
-        return $progress->get_progress_summary($user_id);
     }
 
     /**
@@ -585,6 +614,11 @@ class BP_Export_Import {
      * Called via cron job
      */
     public function check_stuck_operations() {
+        // Only run if components are loaded
+        if (!$this->components_loaded) {
+            return;
+        }
+        
         $progress = $this->get_component('progress');
         if (!$progress) {
             return;
@@ -611,8 +645,9 @@ class BP_Export_Import {
                     array(__('Operation timed out - no activity for 10 minutes', 'bp-export-import'))
                 );
                 
-                if ($this->components['logger']) {
-                    $this->components['logger']->log_warning(
+                $logger = $this->get_component('logger');
+                if ($logger) {
+                    $logger->log_warning(
                         "Operation {$operation_id} marked as failed due to inactivity"
                     );
                 }

@@ -70,7 +70,7 @@ function bp_export_import_get_template($template) {
 /**
  * Increase memory limit for large operations
  *
- * @param string $limit Memory limit (e.g., '512M', '1G')
+ * @param string $limit Memory limit (e.g., '512M', '1G').
  */
 function bp_export_import_increase_memory_limit($limit = '512M') {
     if (function_exists('ini_set')) {
@@ -87,7 +87,7 @@ function bp_export_import_increase_memory_limit($limit = '512M') {
 /**
  * Increase time limit for long operations
  *
- * @param int $seconds Time limit in seconds (0 for unlimited)
+ * @param int $seconds Time limit in seconds (0 for unlimited).
  */
 function bp_export_import_increase_time_limit($seconds = 300) {
     if (function_exists('set_time_limit') && !ini_get('safe_mode')) {
@@ -98,8 +98,8 @@ function bp_export_import_increase_time_limit($seconds = 300) {
 /**
  * Clean up temporary files older than specified days
  *
- * @param int $days_old Number of days old files to delete
- * @return int Number of files deleted
+ * @param int $days_old Number of days old files to delete.
+ * @return int Number of files deleted.
  */
 function bp_export_import_cleanup_temp_files($days_old = 7) {
     $upload_dir = wp_upload_dir();
@@ -127,8 +127,8 @@ function bp_export_import_cleanup_temp_files($days_old = 7) {
 /**
  * Clean up old download files
  *
- * @param int $days_old Number of days old files to delete
- * @return int Number of files deleted
+ * @param int $days_old Number of days old files to delete.
+ * @return int Number of files deleted.
  */
 function bp_export_import_cleanup_download_files($days_old = 30) {
     $upload_dir = wp_upload_dir();
@@ -156,8 +156,8 @@ function bp_export_import_cleanup_download_files($days_old = 30) {
 /**
  * Format file size in human readable format
  *
- * @param int $bytes File size in bytes
- * @return string Formatted file size
+ * @param int $bytes File size in bytes.
+ * @return string Formatted file size.
  */
 function bp_export_import_format_bytes($bytes) {
     return size_format($bytes);
@@ -166,9 +166,9 @@ function bp_export_import_format_bytes($bytes) {
 /**
  * Validate file extension
  *
- * @param string $filename Filename to check
- * @param array $allowed_extensions Array of allowed extensions
- * @return bool True if extension is allowed
+ * @param string $filename           Filename to check.
+ * @param array  $allowed_extensions Array of allowed extensions.
+ * @return bool True if extension is allowed.
  */
 function bp_export_import_validate_file_extension($filename, $allowed_extensions = array('csv', 'json', 'xml')) {
     $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
@@ -178,8 +178,8 @@ function bp_export_import_validate_file_extension($filename, $allowed_extensions
 /**
  * Get file extension from filename
  *
- * @param string $filename Filename
- * @return string File extension
+ * @param string $filename Filename.
+ * @return string File extension.
  */
 function bp_export_import_get_file_extension($filename) {
     return strtolower(pathinfo($filename, PATHINFO_EXTENSION));
@@ -188,8 +188,8 @@ function bp_export_import_get_file_extension($filename) {
 /**
  * Sanitize filename for safe storage
  *
- * @param string $filename Original filename
- * @return string Sanitized filename
+ * @param string $filename Original filename.
+ * @return string Sanitized filename.
  */
 function bp_export_import_sanitize_filename($filename) {
     // Remove directory traversal attempts
@@ -212,8 +212,8 @@ function bp_export_import_sanitize_filename($filename) {
 /**
  * Check if user can perform import/export operations
  *
- * @param string $operation Operation type ('import' or 'export')
- * @return bool True if user has permission
+ * @param string $operation Operation type ('import' or 'export').
+ * @return bool True if user has permission.
  */
 function bp_export_import_user_can($operation = 'export') {
     if (!is_user_logged_in()) {
@@ -239,8 +239,8 @@ function bp_export_import_user_can($operation = 'export') {
 /**
  * Generate unique operation ID
  *
- * @param string $prefix Operation prefix
- * @return string Unique operation ID
+ * @param string $prefix Operation prefix.
+ * @return string Unique operation ID.
  */
 function bp_export_import_generate_operation_id($prefix = 'operation') {
     return $prefix . '_' . uniqid() . '_' . time();
@@ -249,8 +249,8 @@ function bp_export_import_generate_operation_id($prefix = 'operation') {
 /**
  * Convert relative time to human readable format
  *
- * @param int $timestamp Unix timestamp
- * @return string Human readable time difference
+ * @param int $timestamp Unix timestamp.
+ * @return string Human readable time difference.
  */
 function bp_export_import_time_ago($timestamp) {
     return human_time_diff($timestamp, current_time('timestamp')) . ' ' . __('ago', 'bp-export-import');
@@ -259,8 +259,8 @@ function bp_export_import_time_ago($timestamp) {
 /**
  * Get upload directory for plugin files
  *
- * @param string $subdir Subdirectory name
- * @return array Upload directory info
+ * @param string $subdir Subdirectory name.
+ * @return array Upload directory info.
  */
 function bp_export_import_get_upload_dir($subdir = '') {
     $upload_dir = wp_upload_dir();
@@ -281,8 +281,8 @@ function bp_export_import_get_upload_dir($subdir = '') {
 /**
  * Check if string is valid JSON
  *
- * @param string $string String to check
- * @return bool True if valid JSON
+ * @param string $string String to check.
+ * @return bool True if valid JSON.
  */
 function bp_export_import_is_json($string) {
     if (!is_string($string)) {
@@ -296,10 +296,10 @@ function bp_export_import_is_json($string) {
 /**
  * Truncate string to specified length
  *
- * @param string $string String to truncate
- * @param int $length Maximum length
- * @param string $suffix Suffix to append if truncated
- * @return string Truncated string
+ * @param string $string String to truncate.
+ * @param int    $length Maximum length.
+ * @param string $suffix Suffix to append if truncated.
+ * @return string Truncated string.
  */
 function bp_export_import_truncate_string($string, $length = 100, $suffix = '...') {
     if (strlen($string) <= $length) {
@@ -312,7 +312,7 @@ function bp_export_import_truncate_string($string, $length = 100, $suffix = '...
 /**
  * Check if current request is AJAX
  *
- * @return bool True if AJAX request
+ * @return bool True if AJAX request.
  */
 function bp_export_import_is_ajax() {
     return wp_doing_ajax();
@@ -321,8 +321,8 @@ function bp_export_import_is_ajax() {
 /**
  * Get BuddyPress user profile URL
  *
- * @param int $user_id User ID
- * @return string Profile URL
+ * @param int $user_id User ID.
+ * @return string Profile URL.
  */
 function bp_export_import_get_user_profile_url($user_id) {
     if (function_exists('bp_core_get_user_domain')) {
@@ -364,7 +364,7 @@ add_action('bp_export_import_cleanup', 'bp_export_import_handle_cleanup');
 /**
  * Get plugin status information
  *
- * @return array Status information
+ * @return array Status information.
  */
 function bp_export_import_get_status() {
     return bp_export_import()->get_status();
@@ -373,7 +373,7 @@ function bp_export_import_get_status() {
 /**
  * Check if BuddyPress is active and required components are available
  *
- * @return bool|WP_Error True if requirements met, WP_Error otherwise
+ * @return bool|WP_Error True if requirements met, WP_Error otherwise.
  */
 function bp_export_import_check_requirements() {
     return bp_export_import()->check_requirements();
@@ -382,8 +382,8 @@ function bp_export_import_check_requirements() {
 /**
  * Display admin notice
  *
- * @param string $message Notice message
- * @param string $type Notice type (success, error, warning, info)
+ * @param string $message Notice message.
+ * @param string $type    Notice type (success, error, warning, info).
  */
 function bp_export_import_admin_notice($message, $type = 'info') {
     add_action('admin_notices', function() use ($message, $type) {
@@ -398,9 +398,9 @@ function bp_export_import_admin_notice($message, $type = 'info') {
 /**
  * Get localized string
  *
- * @param string $key String key
- * @param string $default Default value if key not found
- * @return string Localized string
+ * @param string $key     String key.
+ * @param string $default Default value if key not found.
+ * @return string Localized string.
  */
 function bp_export_import_get_string($key, $default = '') {
     $strings = array(

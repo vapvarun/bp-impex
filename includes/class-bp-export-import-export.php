@@ -17,23 +17,38 @@ class BP_Export_Import_Export {
 
     /**
      * Export batch size
+     *
+     * @var int
      */
     private $batch_size = 500;
 
     /**
      * Progress tracker
+     *
+     * @var BP_Export_Import_Progress|null
      */
     private $progress;
 
     /**
      * Logger instance
+     *
+     * @var BP_Export_Import_Logger|null
      */
     private $logger;
 
     /**
      * Validator instance
+     *
+     * @var BP_Export_Import_Validator|null
      */
     private $validator;
+
+    /**
+     * Field ID cache for XProfile fields
+     *
+     * @var array
+     */
+    private $field_id_cache = array();
 
     /**
      * Constructor
@@ -111,7 +126,7 @@ class BP_Export_Import_Export {
     /**
      * Validate export options
      *
-     * @param array $options Export options
+     * @param array $options Export options.
      * @return true|WP_Error
      */
     private function validate_export_options($options) {
@@ -210,8 +225,8 @@ class BP_Export_Import_Export {
     /**
      * Get total user count for export
      *
-     * @param array $settings Export settings
-     * @return int Total user count
+     * @param array $settings Export settings.
+     * @return int Total user count.
      */
     private function get_total_user_count($settings = array()) {
         $args = array(
@@ -251,9 +266,9 @@ class BP_Export_Import_Export {
     /**
      * Get users batch for export
      *
-     * @param int $page Page number
-     * @param array $settings Export settings
-     * @return array Array of user objects
+     * @param int   $page     Page number.
+     * @param array $settings Export settings.
+     * @return array Array of user objects.
      */
     private function get_users_batch($page = 1, $settings = array()) {
         $args = array(
@@ -296,7 +311,7 @@ class BP_Export_Import_Export {
     /**
      * Export users as CSV with streaming
      *
-     * @param string $operation_id Operation ID for progress tracking
+     * @param string $operation_id Operation ID for progress tracking.
      */
     private function export_as_csv_stream($operation_id) {
         $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.csv';
@@ -336,11 +351,17 @@ class BP_Export_Import_Export {
                 fputcsv($output, array_values($row_data));
                 $processed++;
                 
+                // Clear row data immediately after use
+                unset($row_data);
+                
                 // Update progress periodically
                 if ($processed % 50 === 0 && $this->progress) {
                     $this->progress->update_progress($operation_id, $processed);
                 }
             }
+            
+            // Clear users array after processing
+            unset($users);
             
             // Flush output buffer to prevent memory issues
             if (ob_get_level()) {
@@ -350,7 +371,7 @@ class BP_Export_Import_Export {
             
             $page++;
             
-        } while (count($users) === $this->batch_size);
+        } while ($page <= 1000); // Safety limit to prevent infinite loops
         
         // Final progress update
         if ($this->progress) {
@@ -364,7 +385,7 @@ class BP_Export_Import_Export {
     /**
      * Export users as JSON with streaming
      *
-     * @param string $operation_id Operation ID for progress tracking
+     * @param string $operation_id Operation ID for progress tracking.
      */
     private function export_as_json_stream($operation_id) {
         $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.json';
@@ -393,7 +414,10 @@ class BP_Export_Import_Export {
                 }
                 
                 $user_data = $this->prepare_user_data($user, $_POST);
-                echo json_encode($user_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                echo wp_json_encode($user_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                
+                // Clear user data immediately
+                unset($user_data);
                 
                 $first_user = false;
                 $processed++;
@@ -410,9 +434,11 @@ class BP_Export_Import_Export {
                 flush();
             }
             
+            // Clear users array
+            unset($users);
             $page++;
             
-        } while (count($users) === $this->batch_size);
+        } while ($page <= 1000); // Safety limit
         
         // Final progress update
         if ($this->progress) {
@@ -426,7 +452,7 @@ class BP_Export_Import_Export {
     /**
      * Export users as XML with streaming
      *
-     * @param string $operation_id Operation ID for progress tracking
+     * @param string $operation_id Operation ID for progress tracking.
      */
     private function export_as_xml_stream($operation_id) {
         $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.xml';
@@ -460,6 +486,9 @@ class BP_Export_Import_Export {
                 }
                 echo '  </user>' . "\n";
                 
+                // Clear user data immediately
+                unset($user_data);
+                
                 $processed++;
                 
                 // Update progress periodically
@@ -474,9 +503,11 @@ class BP_Export_Import_Export {
                 flush();
             }
             
+            // Clear users array
+            unset($users);
             $page++;
             
-        } while (count($users) === $this->batch_size);
+        } while ($page <= 1000); // Safety limit
         
         // Final progress update
         if ($this->progress) {
@@ -490,39 +521,61 @@ class BP_Export_Import_Export {
     /**
      * Prepare user data for export
      *
-     * @param WP_User $user User object
-     * @param array $settings Export settings
-     * @return array Prepared user data
+     * @param WP_User $user     User object.
+     * @param array   $settings Export settings.
+     * @return array Prepared user data.
      */
     public function prepare_user_data($user, $settings = array()) {
-        // Base user data
+        // Start with minimal base data
         $data = array(
             'user_id' => $user->ID,
             'username' => $user->user_login,
             'email' => $user->user_email,
-            'display_name' => $user->display_name,
-            'first_name' => get_user_meta($user->ID, 'first_name', true),
-            'last_name' => get_user_meta($user->ID, 'last_name', true),
-            'description' => get_user_meta($user->ID, 'description', true),
-            'user_url' => $user->user_url,
-            'registered' => $user->user_registered,
-            'role' => implode(',', $user->roles),
-            'status' => $user->user_status
         );
 
-        // Add selected XProfile fields
+        // Only add fields that are actually selected
+        if (!empty($settings['include_display_name'])) {
+            $data['display_name'] = $user->display_name;
+        }
+        
+        if (!empty($settings['include_names'])) {
+            $data['first_name'] = get_user_meta($user->ID, 'first_name', true);
+            $data['last_name'] = get_user_meta($user->ID, 'last_name', true);
+        }
+        
+        if (!empty($settings['include_description'])) {
+            $data['description'] = get_user_meta($user->ID, 'description', true);
+        }
+        
+        if (!empty($settings['include_url'])) {
+            $data['user_url'] = $user->user_url;
+        }
+        
+        if (!empty($settings['include_dates'])) {
+            $data['registered'] = $user->user_registered;
+        }
+        
+        if (!empty($settings['include_role'])) {
+            $data['role'] = implode(',', $user->roles);
+        }
+        
+        if (!empty($settings['include_status'])) {
+            $data['status'] = $user->user_status;
+        }
+
+        // Add selected XProfile fields ONLY if specifically requested
         $selected_xprofile_fields = isset($settings['xprofile_fields']) ? 
             array_map('sanitize_text_field', $settings['xprofile_fields']) : array();
         
         if (!empty($selected_xprofile_fields)) {
-            $profile_data = $this->get_user_profile_data($user->ID);
+            $profile_data = $this->get_user_profile_data($user->ID, $selected_xprofile_fields);
             foreach ($selected_xprofile_fields as $field_name) {
                 $data['xprofile_' . sanitize_key($field_name)] = 
                     isset($profile_data[$field_name]) ? $profile_data[$field_name] : '';
             }
         }
 
-        // Add selected user meta fields
+        // Add selected user meta fields ONLY if specifically requested
         $selected_user_meta_keys = isset($settings['user_meta_keys']) ? 
             array_map('sanitize_text_field', $settings['user_meta_keys']) : array();
         
@@ -530,48 +583,39 @@ class BP_Export_Import_Export {
             foreach ($selected_user_meta_keys as $meta_key) {
                 $meta_value = get_user_meta($user->ID, $meta_key, true);
                 
-                // Handle complex data types
+                // Handle complex data types efficiently
                 if (is_array($meta_value) || is_object($meta_value)) {
-                    $meta_value = json_encode($meta_value);
+                    $meta_value = wp_json_encode($meta_value);
                 }
                 
                 $data['meta_' . sanitize_key($meta_key)] = $meta_value;
             }
         }
 
-        // Allow filtering of user data
         return apply_filters('bp_export_import_export_user_data', $data, $user, $settings);
     }
 
     /**
-     * Get user profile data (BuddyPress XProfile)
+     * Get user profile data (only get requested fields)
      *
-     * @param int $user_id User ID
-     * @return array Profile data
+     * @param int   $user_id         User ID.
+     * @param array $requested_fields Specific fields to retrieve.
+     * @return array Profile data.
      */
-    private function get_user_profile_data($user_id) {
+    private function get_user_profile_data($user_id, $requested_fields = array()) {
         $profile_data = array();
 
-        if (!function_exists('bp_is_active') || !bp_is_active('xprofile')) {
+        if (!function_exists('bp_is_active') || !bp_is_active('xprofile') || empty($requested_fields)) {
             return $profile_data;
         }
 
-        if (function_exists('bp_xprofile_get_groups')) {
-            $profile_groups = bp_xprofile_get_groups(array(
-                'fetch_fields' => true,
-            ));
-
-            if (is_array($profile_groups)) {
-                foreach ($profile_groups as $group) {
-                    if (isset($group->fields) && is_array($group->fields)) {
-                        foreach ($group->fields as $field) {
-                            $field_value = '';
-                            if (function_exists('xprofile_get_field_data')) {
-                                $field_value = xprofile_get_field_data($field->id, $user_id, 'comma');
-                            }
-                            $profile_data[$field->name] = $field_value;
-                        }
-                    }
+        // Only get the specific fields requested instead of all fields
+        foreach ($requested_fields as $field_name) {
+            if (function_exists('xprofile_get_field_data')) {
+                $field_id = $this->get_xprofile_field_id_by_name($field_name);
+                if ($field_id) {
+                    $field_value = xprofile_get_field_data($field_id, $user_id, 'comma');
+                    $profile_data[$field_name] = $field_value;
                 }
             }
         }
@@ -580,9 +624,36 @@ class BP_Export_Import_Export {
     }
 
     /**
+     * Get XProfile field ID by name (with caching)
+     *
+     * @param string $field_name Field name.
+     * @return int|false Field ID or false if not found.
+     */
+    private function get_xprofile_field_id_by_name($field_name) {
+        // Use static cache to avoid repeated DB queries
+        if (isset($this->field_id_cache[$field_name])) {
+            return $this->field_id_cache[$field_name];
+        }
+        
+        global $wpdb;
+        
+        if (!function_exists('bp_is_active') || !bp_is_active('xprofile')) {
+            return false;
+        }
+
+        $field_id = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$wpdb->base_prefix}bp_xprofile_fields WHERE name = %s",
+            $field_name
+        ));
+
+        $this->field_id_cache[$field_name] = $field_id ? intval($field_id) : false;
+        return $this->field_id_cache[$field_name];
+    }
+
+    /**
      * Get available XProfile field names
      *
-     * @return array Array of field names
+     * @return array Array of field names.
      */
     public function get_xprofile_field_names() {
         $field_names = array();
@@ -613,7 +684,7 @@ class BP_Export_Import_Export {
     /**
      * Get sample user meta keys for selection
      *
-     * @return array Array of meta keys
+     * @return array Array of meta keys.
      */
     public function get_user_meta_keys_sample() {
         global $wpdb;
@@ -638,7 +709,7 @@ class BP_Export_Import_Export {
     /**
      * Get XProfile field groups with fields
      *
-     * @return array Array of field groups
+     * @return array Array of field groups.
      */
     public function get_xprofile_field_groups() {
         $field_groups = array();
@@ -682,7 +753,7 @@ class BP_Export_Import_Export {
     /**
      * Get export statistics
      *
-     * @return array Export statistics
+     * @return array Export statistics.
      */
     public function get_export_stats() {
         global $wpdb;
@@ -720,8 +791,8 @@ class BP_Export_Import_Export {
     /**
      * Schedule background export
      *
-     * @param array $settings Export settings
-     * @return string|false Operation ID or false on failure
+     * @param array $settings Export settings.
+     * @return string|false Operation ID or false on failure.
      */
     public function schedule_background_export($settings) {
         $background_process = bp_export_import()->get_component('background_process');

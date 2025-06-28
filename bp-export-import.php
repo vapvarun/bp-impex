@@ -33,16 +33,22 @@ class BP_Export_Import_Loader {
 
     /**
      * Instance of main plugin class
+     *
+     * @var BP_Export_Import_Loader|null
      */
     private static $instance = null;
 
     /**
      * Plugin initialization flag
+     *
+     * @var bool
      */
     private $initialized = false;
 
     /**
      * Get loader instance
+     *
+     * @return BP_Export_Import_Loader
      */
     public static function instance() {
         if (null === self::$instance) {
@@ -100,7 +106,6 @@ class BP_Export_Import_Loader {
         // Functional classes
         require_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import-export.php';
         require_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import-import.php';
-        //bp_export_importrequire_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import-frontend.php';
         require_once BP_EXPORT_IMPORT_PLUGIN_DIR . 'includes/class-bp-export-import-background-process.php';
         
         // Main plugin class
@@ -371,23 +376,34 @@ class BP_Export_Import_Loader {
 
     /**
      * Check minimum requirements
+     *
+     * @return bool|WP_Error
      */
     private function check_requirements() {
         // Check PHP version
         if (version_compare(PHP_VERSION, '7.0', '<')) {
-            return false;
+            return new WP_Error(
+                'php_version',
+                __('BP Export Import requires PHP 7.0 or higher.', 'bp-export-import')
+            );
         }
 
         // Check WordPress version
         if (version_compare(get_bloginfo('version'), '5.0', '<')) {
-            return false;
+            return new WP_Error(
+                'wp_version',
+                __('BP Export Import requires WordPress 5.0 or higher.', 'bp-export-import')
+            );
         }
 
         // Check required PHP extensions
         $required_extensions = array('json', 'mbstring');
         foreach ($required_extensions as $extension) {
             if (!extension_loaded($extension)) {
-                return false;
+                return new WP_Error(
+                    'missing_extension',
+                    sprintf(__('BP Export Import requires the %s PHP extension.', 'bp-export-import'), $extension)
+                );
             }
         }
 
@@ -564,6 +580,8 @@ function bp_export_import_is_ready() {
 
 /**
  * Enqueue plugin assets
+ *
+ * @param string $hook The current admin page hook.
  */
 function bp_export_import_enqueue_admin_assets($hook) {
     // Only load on plugin pages
@@ -646,6 +664,9 @@ add_action('wp_enqueue_scripts', 'bp_export_import_enqueue_frontend_assets');
 
 /**
  * Add action links to plugin page
+ *
+ * @param array $links Existing plugin action links.
+ * @return array Modified plugin action links.
  */
 function bp_export_import_plugin_action_links($links) {
     $action_links = array(
@@ -660,6 +681,10 @@ add_filter('plugin_action_links_' . plugin_basename(__FILE__), 'bp_export_import
 
 /**
  * Add plugin meta links
+ *
+ * @param array  $links Plugin row meta links.
+ * @param string $file  Plugin base file name.
+ * @return array Modified plugin row meta links.
  */
 function bp_export_import_plugin_row_meta($links, $file) {
     if (plugin_basename(__FILE__) === $file) {
