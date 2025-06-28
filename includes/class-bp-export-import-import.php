@@ -1,6 +1,6 @@
 <?php
 /**
- * BP Export Import Import Class
+ * BP Export Import Import Class - LAZY LOADING VERSION
  *
  * Handles the import functionality for the BP Export Import plugin
  *
@@ -46,27 +46,48 @@ class BP_Export_Import_Import {
     private $max_file_size = 52428800;
 
     /**
-     * Constructor
+     * Constructor - MINIMAL initialization only
      */
     public function __construct() {
         $this->batch_size = get_option('bp_export_import_import_batch_size', 100);
         $this->max_file_size = get_option('bp_export_import_max_file_size', 52428800);
         $this->allowed_file_types = get_option('bp_export_import_allowed_file_types', $this->allowed_file_types);
         
-        $this->progress = bp_export_import()->get_component('progress');
-        $this->logger = bp_export_import()->get_component('logger');
-        $this->validator = bp_export_import()->get_component('validator');
-        
-        $this->setup_hooks();
+        // DON'T auto-load components or register hooks
+        // Only load when explicitly needed
     }
 
     /**
-     * Setup WordPress hooks
+     * Setup WordPress hooks - call this only when needed
      */
-    private function setup_hooks() {
+    public function setup_hooks() {
         add_action('admin_init', array($this, 'handle_import_request'));
         add_action('wp_ajax_bp_import_users', array($this, 'ajax_import_users'));
         add_action('wp_ajax_bp_file_preview', array($this, 'ajax_file_preview'));
+    }
+
+    /**
+     * Get components only when needed
+     */
+    private function get_progress() {
+        if (!$this->progress) {
+            $this->progress = bp_export_import()->get_component('progress');
+        }
+        return $this->progress;
+    }
+
+    private function get_logger() {
+        if (!$this->logger) {
+            $this->logger = bp_export_import()->get_component('logger');
+        }
+        return $this->logger;
+    }
+
+    private function get_validator() {
+        if (!$this->validator) {
+            $this->validator = bp_export_import()->get_component('validator');
+        }
+        return $this->validator;
     }
 
     /**
@@ -113,20 +134,21 @@ class BP_Export_Import_Import {
         }
 
         // Start import process
-        $operation_id = $this->progress->generate_operation_id('import');
+        $progress = $this->get_progress();
+        $operation_id = $progress->generate_operation_id('import');
         $file_path = $_FILES['import_file']['tmp_name'];
         $format = isset($_POST['import_format']) ? sanitize_text_field($_POST['import_format']) : 'csv';
         
         // Count total records
         $total_records = $this->count_file_records($file_path, $format);
         
-        $this->progress->start_operation($operation_id, 'import', $total_records, $_POST);
+        $progress->start_operation($operation_id, 'import', $total_records, $_POST);
         
         // Process import
         try {
             $result = $this->process_file_import($file_path, $format, $operation_id);
             
-            $this->progress->complete_operation($operation_id, 'completed');
+            $progress->complete_operation($operation_id, 'completed');
             
             wp_send_json_success(array(
                 'operation_id' => $operation_id,
@@ -136,7 +158,7 @@ class BP_Export_Import_Import {
             ));
             
         } catch (Exception $e) {
-            $this->progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
+            $progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
             wp_send_json_error($e->getMessage());
         }
     }
@@ -179,8 +201,9 @@ class BP_Export_Import_Import {
         $file = $_FILES['import_file'];
 
         // Use validator if available
-        if ($this->validator) {
-            return $this->validator->validate_uploaded_file($file);
+        $validator = $this->get_validator();
+        if ($validator) {
+            return $validator->validate_uploaded_file($file);
         }
 
         // Fallback validation
@@ -233,26 +256,28 @@ class BP_Export_Import_Import {
         $total_records = $this->count_file_records($file, $format);
         
         // Start progress tracking
-        if ($this->progress) {
-            $this->progress->start_operation($operation_id, 'import', $total_records, $_POST);
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->start_operation($operation_id, 'import', $total_records, $_POST);
         }
         
         // Log import start
-        if ($this->logger) {
-            $this->logger->log_operation_start($operation_id, 'import', $_POST);
+        $logger = $this->get_logger();
+        if ($logger) {
+            $logger->log_operation_start($operation_id, 'import', $_POST);
         }
 
         try {
             $result = $this->process_file_import($file, $format, $operation_id);
             
             // Complete progress tracking
-            if ($this->progress) {
-                $this->progress->complete_operation($operation_id, 'completed');
+            if ($progress) {
+                $progress->complete_operation($operation_id, 'completed');
             }
             
             // Log import completion
-            if ($this->logger) {
-                $this->logger->log_operation_complete($operation_id, 'import', $result);
+            if ($logger) {
+                $logger->log_operation_complete($operation_id, 'import', $result);
             }
             
             // Redirect with success message
@@ -268,12 +293,12 @@ class BP_Export_Import_Import {
             
         } catch (Exception $e) {
             // Handle import error
-            if ($this->progress) {
-                $this->progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
+            if ($progress) {
+                $progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
             }
             
-            if ($this->logger) {
-                $this->logger->log_operation_error($operation_id, 'import', $e->getMessage());
+            if ($logger) {
+                $logger->log_operation_error($operation_id, 'import', $e->getMessage());
             }
             
             wp_die(__('Import failed: ', 'bp-export-import') . $e->getMessage());
@@ -344,8 +369,9 @@ class BP_Export_Import_Import {
                 $errors = array_merge($errors, $batch_result['errors']);
                 
                 // Update progress
-                if ($this->progress) {
-                    $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                $progress = $this->get_progress();
+                if ($progress) {
+                    $progress->update_progress($operation_id, $processed, $batch_result['errors']);
                 }
                 
                 $batch = array();
@@ -359,8 +385,9 @@ class BP_Export_Import_Import {
             $errors = array_merge($errors, $batch_result['errors']);
             
             // Final progress update
-            if ($this->progress) {
-                $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->update_progress($operation_id, $processed, $batch_result['errors']);
             }
         }
 
@@ -416,8 +443,9 @@ class BP_Export_Import_Import {
                 $errors = array_merge($errors, $batch_result['errors']);
                 
                 // Update progress
-                if ($this->progress) {
-                    $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                $progress = $this->get_progress();
+                if ($progress) {
+                    $progress->update_progress($operation_id, $processed, $batch_result['errors']);
                 }
                 
                 $batch = array();
@@ -431,8 +459,9 @@ class BP_Export_Import_Import {
             $errors = array_merge($errors, $batch_result['errors']);
             
             // Final progress update
-            if ($this->progress) {
-                $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->update_progress($operation_id, $processed, $batch_result['errors']);
             }
         }
 
@@ -479,8 +508,9 @@ class BP_Export_Import_Import {
                 $errors = array_merge($errors, $batch_result['errors']);
                 
                 // Update progress
-                if ($this->progress) {
-                    $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                $progress = $this->get_progress();
+                if ($progress) {
+                    $progress->update_progress($operation_id, $processed, $batch_result['errors']);
                 }
                 
                 $batch = array();
@@ -494,8 +524,9 @@ class BP_Export_Import_Import {
             $errors = array_merge($errors, $batch_result['errors']);
             
             // Final progress update
-            if ($this->progress) {
-                $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->update_progress($operation_id, $processed, $batch_result['errors']);
             }
         }
 
@@ -518,8 +549,9 @@ class BP_Export_Import_Import {
         foreach ($batch as $user_data) {
             try {
                 // Validate user data
-                if ($this->validator) {
-                    $validation_result = $this->validator->validate_user_data($user_data);
+                $validator = $this->get_validator();
+                if ($validator) {
+                    $validation_result = $validator->validate_user_data($user_data);
                     if (is_wp_error($validation_result)) {
                         $errors[] = sprintf(
                             __('User %s: %s', 'bp-export-import'),
@@ -530,7 +562,7 @@ class BP_Export_Import_Import {
                     }
                     
                     // Sanitize user data
-                    $user_data = $this->validator->sanitize_user_data($user_data);
+                    $user_data = $validator->sanitize_user_data($user_data);
                 } else {
                     // Basic validation and sanitization
                     $user_data = $this->sanitize_user_data($user_data);
@@ -974,7 +1006,8 @@ class BP_Export_Import_Import {
             return false;
         }
         
-        $operation_id = $this->progress->generate_operation_id('import');
+        $progress = $this->get_progress();
+        $operation_id = $progress->generate_operation_id('import');
         
         if ($background_process->queue_import($operation_id, $file_path, $settings)) {
             return $operation_id;

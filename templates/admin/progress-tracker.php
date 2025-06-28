@@ -1,6 +1,6 @@
 <?php
 /**
- * Progress tracker template for BP Export Import plugin
+ * Progress tracker template for BP Export Import plugin - FIXED VERSION
  *
  * @package BP_Export_Import
  * @since 1.0.0
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Get plugin components
+// Get plugin components and ensure hooks are set up
 $progress = bp_export_import()->get_component('progress');
 
 // Set up AJAX hooks only when on this page
@@ -510,6 +510,19 @@ jQuery(document).ready(function($) {
     margin-bottom: 20px;
 }
 
+.no-operations-icon {
+    font-size: 48px;
+    margin-bottom: 20px;
+}
+
+.quick-actions {
+    margin-top: 20px;
+}
+
+.quick-actions .button {
+    margin: 0 5px;
+}
+
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -537,5 +550,122 @@ jQuery(document).ready(function($) {
     font-size: 13px;
     color: #666;
     text-transform: uppercase;
+}
+
+.progress-section {
+    margin-top: 15px;
+}
+
+.progress-bar-container {
+    margin-bottom: 10px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 16px;
+    background: #e1e1e1;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 8px;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #0073aa, #005a87);
+    transition: width 0.3s ease;
+}
+
+.progress-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #666;
+}
+
+.progress-percentage {
+    font-weight: bold;
+}
+
+.current-step {
+    margin-bottom: 10px;
+    font-size: 13px;
+    color: #666;
+}
+
+.operation-errors {
+    margin-top: 10px;
+    padding: 10px;
+    background: #fff3f3;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.error-count {
+    color: #dc3232;
+    font-weight: bold;
+}
+
+.show-errors {
+    color: #dc3232;
+    text-decoration: none;
+    margin-left: 10px;
+}
+
+.error-details {
+    margin-top: 10px;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #e1e1e1;
+    border-radius: 4px;
+}
+
+.error-details ul {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.error-details li {
+    margin-bottom: 5px;
+}
+
+.operations-table-container {
+    margin-top: 15px;
+}
+
+.operation-type {
+    text-transform: capitalize;
+}
+
+.operation-export {
+    color: #0073aa;
+}
+
+.operation-import {
+    color: #46b450;
+}
+
+.no-errors {
+    color: #46b450;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .operation-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .operation-actions {
+        margin-top: 10px;
+    }
+    
+    .progress-stats {
+        flex-direction: column;
+        gap: 5px;
+    }
+    
+    .stats-grid {
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
 }
 </style>

@@ -1,6 +1,6 @@
 <?php
 /**
- * BP Export Import Field Mapping Class
+ * BP Export Import Field Mapping Class - COMPLETE LAZY LOADING VERSION
  *
  * Manages field mapping for import/export operations
  *
@@ -21,21 +21,31 @@ class BP_Export_Import_Field_Mapping {
     private $logger;
 
     /**
-     * Constructor
+     * Constructor - MINIMAL initialization only
      */
     public function __construct() {
-        $this->logger = bp_export_import()->get_component('logger');
-        $this->setup_hooks();
+        // DON'T auto-load components or register hooks
+        // Only load when explicitly needed
     }
 
     /**
-     * Setup WordPress hooks
+     * Setup WordPress hooks - call this only when needed
      */
-    private function setup_hooks() {
+    public function setup_hooks() {
         add_action('admin_init', array($this, 'handle_mapping_save'));
         add_action('wp_ajax_bp_load_field_mapping', array($this, 'ajax_load_field_mapping'));
         add_action('wp_ajax_bp_save_field_mapping', array($this, 'ajax_save_field_mapping'));
         add_action('wp_ajax_bp_delete_field_mapping', array($this, 'ajax_delete_field_mapping'));
+    }
+
+    /**
+     * Get logger instance (lazy loading)
+     */
+    private function get_logger() {
+        if (!$this->logger) {
+            $this->logger = bp_export_import()->get_component('logger');
+        }
+        return $this->logger;
     }
 
     /**
@@ -192,8 +202,9 @@ class BP_Export_Import_Field_Mapping {
         
         if (update_option('bp_export_import_field_mappings', $saved_mappings)) {
             // Log mapping creation
-            if ($this->logger) {
-                $this->logger->log_info("Field mapping '{$name}' created", array(
+            $logger = $this->get_logger();
+            if ($logger) {
+                $logger->log_info("Field mapping '{$name}' created", array(
                     'mapping_id' => $mapping_id,
                     'field_count' => count($sanitized_mapping)
                 ));
@@ -241,10 +252,13 @@ class BP_Export_Import_Field_Mapping {
             $result = update_option('bp_export_import_field_mappings', $saved_mappings);
             
             // Log mapping deletion
-            if ($result && $this->logger) {
-                $this->logger->log_info("Field mapping '{$mapping_name}' deleted", array(
-                    'mapping_id' => $mapping_id
-                ));
+            if ($result) {
+                $logger = $this->get_logger();
+                if ($logger) {
+                    $logger->log_info("Field mapping '{$mapping_name}' deleted", array(
+                        'mapping_id' => $mapping_id
+                    ));
+                }
             }
             
             return $result;
@@ -640,11 +654,13 @@ class BP_Export_Import_Field_Mapping {
         // Analyze field usage
         $field_usage = array();
         foreach ($mappings as $mapping) {
-            foreach ($mapping['mapping'] as $bp_field => $import_field) {
-                if (!isset($field_usage[$bp_field])) {
-                    $field_usage[$bp_field] = 0;
+            if (isset($mapping['mapping']) && is_array($mapping['mapping'])) {
+                foreach ($mapping['mapping'] as $bp_field => $import_field) {
+                    if (!isset($field_usage[$bp_field])) {
+                        $field_usage[$bp_field] = 0;
+                    }
+                    $field_usage[$bp_field]++;
                 }
-                $field_usage[$bp_field]++;
             }
         }
 
@@ -659,7 +675,7 @@ class BP_Export_Import_Field_Mapping {
                 'id' => $id,
                 'name' => $mapping['name'],
                 'created_at' => $mapping['created_at'],
-                'field_count' => count($mapping['mapping'])
+                'field_count' => isset($mapping['mapping']) ? count($mapping['mapping']) : 0
             );
         }
 

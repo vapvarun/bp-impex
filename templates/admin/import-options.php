@@ -1,6 +1,6 @@
 <?php
 /**
- * Import options template for BP Export Import plugin
+ * Import options template for BP Export Import plugin - FIXED VERSION
  *
  * @package BP_Export_Import
  * @since 1.0.0
@@ -321,6 +321,58 @@ jQuery(document).ready(function($) {
 
 <style>
 /* Import specific styles */
+.bp-export-import-container {
+    max-width: 1200px;
+}
+
+.bp-import-stats-card,
+.bp-import-form-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 20px;
+    margin-top: 15px;
+}
+
+.stat-item {
+    text-align: center;
+    padding: 15px;
+    background: #f6f7f7;
+    border-radius: 4px;
+}
+
+.stat-number {
+    display: block;
+    font-size: 24px;
+    font-weight: bold;
+    color: #0073aa;
+}
+
+.stat-label {
+    display: block;
+    font-size: 12px;
+    color: #666;
+    text-transform: uppercase;
+    margin-top: 5px;
+}
+
+.form-section {
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #e1e1e1;
+}
+
+.form-section:last-child {
+    border-bottom: none;
+}
+
 .file-upload-container {
     border: 2px dashed #c3c4c7;
     border-radius: 4px;
@@ -386,5 +438,53 @@ jQuery(document).ready(function($) {
     padding: 20px;
     border-top: 1px solid #e1e1e1;
     text-align: right;
+}
+
+.bp-progress-container {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+.progress-bar-container {
+    margin: 15px 0;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 20px;
+    background: #e1e1e1;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #0073aa, #005a87);
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+    font-size: 14px;
+}
+
+.progress-details {
+    margin: 15px 0;
+    padding: 10px;
+    background: #f9f9f9;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.description {
+    font-style: italic;
+    color: #666;
+    display: block;
+    margin-top: 3px;
 }
 </style>

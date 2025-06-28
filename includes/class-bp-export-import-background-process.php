@@ -1,6 +1,6 @@
 <?php
 /**
- * BP Export Import Background Process Class
+ * BP Export Import Background Process Class - LAZY LOADING VERSION
  *
  * Handles background processing for large import/export operations
  *
@@ -46,19 +46,17 @@ class BP_Export_Import_Background_Process {
     private $logger;
 
     /**
-     * Constructor
+     * Constructor - MINIMAL initialization only
      */
     public function __construct() {
-        $this->progress = new BP_Export_Import_Progress();
-        $this->logger = new BP_Export_Import_Logger();
-        
-        $this->setup_hooks();
+        // DON'T auto-load components or register hooks
+        // Only load when explicitly needed
     }
 
     /**
-     * Setup WordPress hooks
+     * Setup WordPress hooks - call this only when needed
      */
-    private function setup_hooks() {
+    public function setup_hooks() {
         add_action('wp_ajax_' . self::ACTION_NAME, array($this, 'handle_ajax_request'));
         add_action('wp_ajax_nopriv_' . self::ACTION_NAME, array($this, 'handle_ajax_request'));
         add_action('wp_scheduled_delete', array($this, 'cleanup_old_processes'));
@@ -70,6 +68,23 @@ class BP_Export_Import_Background_Process {
         if (!wp_next_scheduled('bp_export_import_process_queue')) {
             wp_schedule_event(time(), 'every_minute', 'bp_export_import_process_queue');
         }
+    }
+
+    /**
+     * Get components only when needed
+     */
+    private function get_progress() {
+        if (!$this->progress) {
+            $this->progress = bp_export_import()->get_component('progress');
+        }
+        return $this->progress;
+    }
+
+    private function get_logger() {
+        if (!$this->logger) {
+            $this->logger = bp_export_import()->get_component('logger');
+        }
+        return $this->logger;
     }
 
     /**
@@ -168,7 +183,10 @@ class BP_Export_Import_Background_Process {
             $this->process_job($job);
             
         } catch (Exception $e) {
-            $this->logger->log_error('Background process error: ' . $e->getMessage());
+            $logger = $this->get_logger();
+            if ($logger) {
+                $logger->log_error('Background process error: ' . $e->getMessage());
+            }
         } finally {
             $this->unlock_process();
         }
@@ -194,8 +212,15 @@ class BP_Export_Import_Background_Process {
                     throw new Exception('Unknown job type: ' . $job['type']);
             }
         } catch (Exception $e) {
-            $this->progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
-            $this->logger->log_error("Job {$operation_id} failed: " . $e->getMessage());
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
+            }
+            
+            $logger = $this->get_logger();
+            if ($logger) {
+                $logger->log_error("Job {$operation_id} failed: " . $e->getMessage());
+            }
         }
     }
 
@@ -215,13 +240,16 @@ class BP_Export_Import_Background_Process {
         }
 
         // Initialize import process
-        $importer = new BP_Export_Import_Import();
+        $importer = bp_export_import()->get_component('import');
         
         // Set up progress tracking
         $format = $settings['format'] ?? $this->detect_file_format($file_path);
         $total_records = $this->count_file_records($file_path, $format);
         
-        $this->progress->start_operation($operation_id, 'import', $total_records, $settings);
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->start_operation($operation_id, 'import', $total_records, $settings);
+        }
         
         // Process import in batches
         $batch_size = $settings['batch_size'] ?? 100;
@@ -246,7 +274,9 @@ class BP_Export_Import_Background_Process {
             unlink($file_path);
         }
 
-        $this->progress->complete_operation($operation_id, 'completed');
+        if ($progress) {
+            $progress->complete_operation($operation_id, 'completed');
+        }
     }
 
     /**
@@ -259,12 +289,15 @@ class BP_Export_Import_Background_Process {
         $settings = $job['settings'];
         
         // Initialize export process
-        $exporter = new BP_Export_Import_Export();
+        $exporter = bp_export_import()->get_component('export');
         
         // Count total users
         $total_users = $this->count_export_users($settings);
         
-        $this->progress->start_operation($operation_id, 'export', $total_users, $settings);
+        $progress = $this->get_progress();
+        if ($progress) {
+            $progress->start_operation($operation_id, 'export', $total_users, $settings);
+        }
         
         // Process export in batches
         $batch_size = $settings['batch_size'] ?? 500;
@@ -293,9 +326,11 @@ class BP_Export_Import_Background_Process {
         
         // Update operation with download link
         $download_url = $upload_dir['baseurl'] . '/bp-export-import-downloads/' . basename($final_file);
-        $this->progress->log_event($operation_id, 'Export file available: ' . $download_url);
         
-        $this->progress->complete_operation($operation_id, 'completed');
+        if ($progress) {
+            $progress->log_event($operation_id, 'Export file available: ' . $download_url);
+            $progress->complete_operation($operation_id, 'completed');
+        }
         
         // Send email notification if enabled
         if ($settings['email_notification'] ?? false) {
@@ -334,7 +369,10 @@ class BP_Export_Import_Background_Process {
                     $processed += $batch_result['processed'];
                     $errors = array_merge($errors, $batch_result['errors']);
                     
-                    $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                    $progress = $this->get_progress();
+                    if ($progress) {
+                        $progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                    }
                     $batch = array();
                 }
             } else {
@@ -348,7 +386,10 @@ class BP_Export_Import_Background_Process {
             $processed += $batch_result['processed'];
             $errors = array_merge($errors, $batch_result['errors']);
             
-            $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            }
         }
 
         fclose($handle);
@@ -385,7 +426,10 @@ class BP_Export_Import_Background_Process {
                 $processed += $batch_result['processed'];
                 $errors = array_merge($errors, $batch_result['errors']);
                 
-                $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                $progress = $this->get_progress();
+                if ($progress) {
+                    $progress->update_progress($operation_id, $processed, $batch_result['errors']);
+                }
                 $batch = array();
             }
         }
@@ -396,7 +440,10 @@ class BP_Export_Import_Background_Process {
             $processed += $batch_result['processed'];
             $errors = array_merge($errors, $batch_result['errors']);
             
-            $this->progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->update_progress($operation_id, $processed, $batch_result['errors']);
+            }
         }
     }
 
@@ -404,7 +451,7 @@ class BP_Export_Import_Background_Process {
      * Process import batch
      */
     private function process_import_batch($batch) {
-        $importer = new BP_Export_Import_Import();
+        $importer = bp_export_import()->get_component('import');
         return $importer->process_user_batch($batch);
     }
 
@@ -412,7 +459,7 @@ class BP_Export_Import_Background_Process {
      * Process export in batches
      */
     private function process_export_batches($export_file, $operation_id, $settings, $batch_size) {
-        $exporter = new BP_Export_Import_Export();
+        $exporter = bp_export_import()->get_component('export');
         $format = $settings['format'] ?? 'csv';
         
         $page = 1;
@@ -473,7 +520,10 @@ class BP_Export_Import_Background_Process {
                 $processed++;
             }
 
-            $this->progress->update_progress($operation_id, $processed);
+            $progress = $this->get_progress();
+            if ($progress) {
+                $progress->update_progress($operation_id, $processed);
+            }
             $page++;
 
         } while (count($users) === $batch_size);
@@ -658,7 +708,8 @@ class BP_Export_Import_Background_Process {
             wp_send_json_error(__('Permission denied.', 'bp-export-import'));
         }
 
-        $operation_id = $this->progress->generate_operation_id('import');
+        $progress = $this->get_progress();
+        $operation_id = $progress->generate_operation_id('import');
         $file_data = isset($_POST['file_data']) ? $_POST['file_data'] : array();
         $settings = isset($_POST['settings']) ? $_POST['settings'] : array();
 
@@ -681,7 +732,8 @@ class BP_Export_Import_Background_Process {
             wp_send_json_error(__('Permission denied.', 'bp-export-import'));
         }
 
-        $operation_id = $this->progress->generate_operation_id('export');
+        $progress = $this->get_progress();
+        $operation_id = $progress->generate_operation_id('export');
         $settings = isset($_POST['settings']) ? $_POST['settings'] : array();
 
         // Queue the export
