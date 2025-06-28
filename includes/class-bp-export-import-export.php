@@ -1,300 +1,576 @@
 <?php
-// Handles the export functionality for the BP Export Import plugin.
+/**
+ * BP Export Import Export Class
+ *
+ * Handles the export functionality for the BP Export Import plugin
+ *
+ * @package BP_Export_Import
+ * @since 1.0.0
+ */
 
-class BP_Export_Import_Export
-{
+// Prevent direct access
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+class BP_Export_Import_Export {
 
     /**
-     * Constructor to set up hooks and initialize the export process.
+     * Export batch size
      */
-    public function __construct()
-    {
-        add_action('admin_init', array($this, 'handle_export_request'));
+    private $batch_size = 500;
+
+    /**
+     * Progress tracker
+     */
+    private $progress;
+
+    /**
+     * Logger instance
+     */
+    private $logger;
+
+    /**
+     * Validator instance
+     */
+    private $validator;
+
+    /**
+     * Constructor
+     */
+    public function __construct() {
+        $this->batch_size = get_option('bp_export_import_export_batch_size', 500);
+        $this->progress = bp_export_import()->get_component('progress');
+        $this->logger = bp_export_import()->get_component('logger');
+        $this->validator = bp_export_import()->get_component('validator');
+        
+        $this->setup_hooks();
     }
 
     /**
-     * Handle the export request when the user submits the export form.
+     * Setup WordPress hooks
      */
-    public function handle_export_request()
-    {
-        // Only proceed if we're on the specific page for export
-        if (isset($_POST['bp_export_import_export']) && check_admin_referer('bp_export_import_export_nonce', '_wpnonce_bp_export_import_export')) {
-            // This condition ensures that the export request is being processed
+    private function setup_hooks() {
+        add_action('admin_init', array($this, 'handle_export_request'));
+        add_action('wp_ajax_bp_export_users', array($this, 'ajax_export_users'));
+    }
+
+    /**
+     * Handle export request from admin form
+     */
+    public function handle_export_request() {
+        if (isset($_POST['bp_export_import_export']) && 
+            check_admin_referer('bp_export_import_export_nonce', '_wpnonce_bp_export_import_export')) {
+            
+            // Check user permissions
+            if (!current_user_can('export') && !current_user_can('manage_options')) {
+                wp_die(__('You do not have permission to export data.', 'bp-export-import'));
+            }
+            
+            // Validate export options
+            $validation_result = $this->validate_export_options($_POST);
+            if (is_wp_error($validation_result)) {
+                wp_die($validation_result->get_error_message());
+            }
+            
             $this->export_users();
         }
     }
 
-
     /**
-     * Export BuddyPress user data based on the selected options.
+     * AJAX handler for export requests
      */
-    public function export_users()
-    {
-        $paged = 1;
-
-        // Open CSV output early to prevent memory issues
-        $format = isset($_POST['export_format']) ? sanitize_text_field($_POST['export_format']) : 'csv';
-
-        if ($format == 'csv') {
-            $filename = 'bp-users-export-' . date('Y-m-d') . '.csv';
-            header('Content-Type: text/csv; charset=utf-8');
-            header('Content-Disposition: attachment; filename=' . $filename);
-            $output = fopen('php://output', 'w');
+    public function ajax_export_users() {
+        check_ajax_referer('bp_export_import_ajax', 'nonce');
+        
+        if (!current_user_can('export') && !current_user_can('manage_options')) {
+            wp_send_json_error(__('Permission denied.', 'bp-export-import'));
         }
 
-        do {
-            $users = $this->get_users($paged);
+        // Get export settings from AJAX request
+        $settings = isset($_POST['settings']) ? $_POST['settings'] : array();
+        
+        // Validate settings
+        $validation_result = $this->validate_export_options($settings);
+        if (is_wp_error($validation_result)) {
+            wp_send_json_error($validation_result->get_error_message());
+        }
 
-            if ($users === false) {
-                if ($paged === 1) {
-                    wp_die('No users found for export.');
+        // Start export process
+        $operation_id = $this->progress->generate_operation_id('export');
+        $total_users = $this->get_total_user_count($settings);
+        
+        $this->progress->start_operation($operation_id, 'export', $total_users, $settings);
+        
+        wp_send_json_success(array(
+            'operation_id' => $operation_id,
+            'message' => __('Export started successfully.', 'bp-export-import')
+        ));
+    }
+
+    /**
+     * Validate export options
+     *
+     * @param array $options Export options
+     * @return true|WP_Error
+     */
+    private function validate_export_options($options) {
+        // Validate format
+        $format = isset($options['export_format']) ? sanitize_text_field($options['export_format']) : 'csv';
+        if (!in_array($format, array('csv', 'json', 'xml'))) {
+            return new WP_Error('invalid_format', __('Invalid export format.', 'bp-export-import'));
+        }
+
+        // Check if at least one field type is selected
+        $has_xprofile = !empty($options['xprofile_fields']);
+        $has_meta = !empty($options['user_meta_keys']);
+        
+        if (!$has_xprofile && !$has_meta) {
+            return new WP_Error('no_fields', __('Please select at least one field to export.', 'bp-export-import'));
+        }
+
+        // Validate user roles if specified
+        if (!empty($options['roles'])) {
+            $valid_roles = wp_roles()->get_names();
+            foreach ($options['roles'] as $role) {
+                if (!array_key_exists($role, $valid_roles)) {
+                    return new WP_Error('invalid_role', sprintf(
+                        __('Invalid user role: %s', 'bp-export-import'),
+                        $role
+                    ));
                 }
-                break;
             }
+        }
 
-            $write_headers = ($paged === 1); // Write headers only on the first page
+        return true;
+    }
+
+    /**
+     * Main export function
+     */
+    public function export_users() {
+        // Increase memory and time limits
+        bp_export_import_increase_memory_limit('512M');
+        bp_export_import_increase_time_limit(300);
+        
+        $format = isset($_POST['export_format']) ? sanitize_text_field($_POST['export_format']) : 'csv';
+        $operation_id = 'export_' . time() . '_' . uniqid();
+        
+        // Get total user count for progress tracking
+        $total_users = $this->get_total_user_count($_POST);
+        
+        // Start progress tracking
+        if ($this->progress) {
+            $this->progress->start_operation($operation_id, 'export', $total_users, $_POST);
+        }
+        
+        // Log export start
+        if ($this->logger) {
+            $this->logger->log_operation_start($operation_id, 'export', $_POST);
+        }
+        
+        try {
             switch ($format) {
                 case 'json':
-                    $this->export_as_json($users, $paged, $limit);
+                    $this->export_as_json_stream($operation_id);
                     break;
                 case 'xml':
-                    $this->export_as_xml($users, $paged, $limit);
+                    $this->export_as_xml_stream($operation_id);
                     break;
                 case 'csv':
                 default:
-                    $this->export_as_csv($users, $output, $write_headers);
+                    $this->export_as_csv_stream($operation_id);
                     break;
             }
-
-            $paged++;
-        } while (count($users) === $limit);
-
-        if ($format == 'csv') {
-            fclose($output);
+            
+            // Complete progress tracking
+            if ($this->progress) {
+                $this->progress->complete_operation($operation_id, 'completed');
+            }
+            
+            // Log export completion
+            if ($this->logger) {
+                $this->logger->log_operation_complete($operation_id, 'export');
+            }
+            
+        } catch (Exception $e) {
+            // Handle export error
+            if ($this->progress) {
+                $this->progress->complete_operation($operation_id, 'failed', array($e->getMessage()));
+            }
+            
+            if ($this->logger) {
+                $this->logger->log_operation_error($operation_id, 'export', $e->getMessage());
+            }
+            
+            wp_die(__('Export failed. Please check the error logs.', 'bp-export-import'));
         }
-
-        exit;
     }
 
-
     /**
-     * Retrieve users and their BuddyPress data for export.
+     * Get total user count for export
      *
-     * @return array|bool List of users with their data, or false if no users found.
+     * @param array $settings Export settings
+     * @return int Total user count
      */
-    private function get_users($paged = 1)
-    {
-        // Apply filter to allow dynamic setting of the user limit
-        $limit = apply_filters('bp_export_import_user_limit', 500);
-
+    private function get_total_user_count($settings = array()) {
         $args = array(
-            'fields'   => 'all',
-            'role__in' => isset($_POST['roles']) ? array_map('sanitize_text_field', $_POST['roles']) : array(),
-            'number'   => $limit, // Limit to the number set by the filter
-            'paged'    => $paged, // Set the current page
+            'count_total' => true,
+            'fields' => 'ID'
         );
 
+        // Add role filter if specified
+        if (!empty($settings['roles'])) {
+            $args['role__in'] = array_map('sanitize_text_field', $settings['roles']);
+        }
+
+        // Add date filter if specified
+        if (!empty($settings['date_from'])) {
+            $args['date_query'] = array(
+                array(
+                    'after' => sanitize_text_field($settings['date_from']),
+                    'inclusive' => true,
+                ),
+            );
+        }
+
+        if (!empty($settings['date_to'])) {
+            if (!isset($args['date_query'])) {
+                $args['date_query'] = array();
+            }
+            $args['date_query'][] = array(
+                'before' => sanitize_text_field($settings['date_to']),
+                'inclusive' => true,
+            );
+        }
+
         $user_query = new WP_User_Query($args);
-        $users = $user_query->get_results();
-
-        if (!is_array($users) || empty($users)) {
-            return false;
-        }
-
-        return $users;
+        return $user_query->get_total();
     }
 
     /**
-     * Export users as a CSV file.
+     * Get users batch for export
      *
-     * @param array $users List of users to export.
-     * @param resource $output CSV file handle.
-     * @param bool $write_headers Whether to write headers (only true on the first call).
+     * @param int $page Page number
+     * @param array $settings Export settings
+     * @return array Array of user objects
      */
-    private function export_as_csv($users, $output, $write_headers = true)
-    {
-        // Get selected XProfile fields and user meta keys
-        $selected_xprofile_fields = isset($_POST['xprofile_fields']) ? array_map('sanitize_text_field', $_POST['xprofile_fields']) : [];
-        $selected_user_meta_keys = isset($_POST['user_meta_keys']) ? array_map('sanitize_text_field', $_POST['user_meta_keys']) : [];
+    private function get_users_batch($page = 1, $settings = array()) {
+        $args = array(
+            'fields'   => 'all',
+            'number'   => $this->batch_size,
+            'paged'    => $page,
+            'orderby'  => 'ID',
+            'order'    => 'ASC'
+        );
 
-        if ($write_headers) {
-            // Create CSV headers
-            $headers = ['User ID', 'Username', 'Email'];
-            $headers = array_merge($headers, $selected_xprofile_fields, $selected_user_meta_keys);
-
-            fputcsv($output, $headers);
+        // Add role filter if specified
+        if (!empty($settings['roles'])) {
+            $args['role__in'] = array_map('sanitize_text_field', $settings['roles']);
         }
 
-        foreach ($users as $user) {
-            $row = [
-                $user->ID,
-                $user->user_login,
-                $user->user_email
-            ];
+        // Add date filter if specified
+        if (!empty($settings['date_from'])) {
+            $args['date_query'] = array(
+                array(
+                    'after' => sanitize_text_field($settings['date_from']),
+                    'inclusive' => true,
+                ),
+            );
+        }
 
-            // Add selected XProfile data to the row
-            $profile_data = $this->get_user_profile_data($user->ID);
-            foreach ($selected_xprofile_fields as $field_name) {
-                $row[] = isset($profile_data[$field_name]) ? $profile_data[$field_name] : '';
+        if (!empty($settings['date_to'])) {
+            if (!isset($args['date_query'])) {
+                $args['date_query'] = array();
             }
+            $args['date_query'][] = array(
+                'before' => sanitize_text_field($settings['date_to']),
+                'inclusive' => true,
+            );
+        }
 
-            // Add selected user meta data to the row
-            $user_meta = $this->get_user_meta_data($user->ID);
-            foreach ($selected_user_meta_keys as $meta_key) {
-                $meta_value = isset($user_meta[$meta_key]) ? maybe_unserialize($user_meta[$meta_key][0]) : '';
+        $user_query = new WP_User_Query($args);
+        return $user_query->get_results();
+    }
 
-                if (is_array($meta_value)) {
-                    $meta_value = json_encode($meta_value);
+    /**
+     * Export users as CSV with streaming
+     *
+     * @param string $operation_id Operation ID for progress tracking
+     */
+    private function export_as_csv_stream($operation_id) {
+        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.csv';
+        
+        // Set headers for file download
+        header('Content-Type: text/csv; charset=utf-8');
+        header('Content-Disposition: attachment; filename=' . $filename);
+        header('Cache-Control: no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        
+        // Open output stream
+        $output = fopen('php://output', 'w');
+        
+        // Add BOM for proper UTF-8 encoding in Excel
+        fwrite($output, "\xEF\xBB\xBF");
+        
+        $page = 1;
+        $processed = 0;
+        $headers_written = false;
+        
+        do {
+            $users = $this->get_users_batch($page, $_POST);
+            
+            if (empty($users)) {
+                break;
+            }
+            
+            foreach ($users as $user) {
+                $row_data = $this->prepare_user_data($user, $_POST);
+                
+                // Write headers only once
+                if (!$headers_written) {
+                    fputcsv($output, array_keys($row_data));
+                    $headers_written = true;
                 }
-
-                $row[] = $meta_value;
+                
+                fputcsv($output, array_values($row_data));
+                $processed++;
+                
+                // Update progress periodically
+                if ($processed % 50 === 0 && $this->progress) {
+                    $this->progress->update_progress($operation_id, $processed);
+                }
             }
-
-            fputcsv($output, $row);
+            
+            // Flush output buffer to prevent memory issues
+            if (ob_get_level()) {
+                ob_flush();
+            }
+            flush();
+            
+            $page++;
+            
+        } while (count($users) === $this->batch_size);
+        
+        // Final progress update
+        if ($this->progress) {
+            $this->progress->update_progress($operation_id, $processed);
         }
+        
+        fclose($output);
+        exit;
     }
 
     /**
-     * Export users as a JSON file.
+     * Export users as JSON with streaming
      *
-     * @param array $users List of users to export.
+     * @param string $operation_id Operation ID for progress tracking
      */
-    private function export_as_json($users)
-    {
-        $filename = 'bp-users-export-' . date('Y-m-d') . '.json';
-
+    private function export_as_json_stream($operation_id) {
+        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.json';
+        
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename=' . $filename);
-
-        $data = array();
-
-        foreach ($users as $user) {
-            $user_data = array(
-                'user_id'      => $user->ID,
-                'username'     => $user->user_login,
-                'email'        => $user->user_email,
-                'profile_data' => $this->get_user_profile_data($user->ID),
-                'user_meta'    => $this->process_user_meta_data($this->get_user_meta_data($user->ID)),
-            );
-            $data[] = $user_data;
+        header('Cache-Control: no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        
+        echo '{"users":[';
+        
+        $page = 1;
+        $processed = 0;
+        $first_user = true;
+        
+        do {
+            $users = $this->get_users_batch($page, $_POST);
+            
+            if (empty($users)) {
+                break;
+            }
+            
+            foreach ($users as $user) {
+                if (!$first_user) {
+                    echo ',';
+                }
+                
+                $user_data = $this->prepare_user_data($user, $_POST);
+                echo json_encode($user_data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                
+                $first_user = false;
+                $processed++;
+                
+                // Update progress periodically
+                if ($processed % 50 === 0 && $this->progress) {
+                    $this->progress->update_progress($operation_id, $processed);
+                }
+                
+                // Flush output
+                if (ob_get_level()) {
+                    ob_flush();
+                }
+                flush();
+            }
+            
+            $page++;
+            
+        } while (count($users) === $this->batch_size);
+        
+        // Final progress update
+        if ($this->progress) {
+            $this->progress->update_progress($operation_id, $processed);
         }
-
-        echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        
+        echo ']}';
         exit;
     }
 
     /**
-     * Process user meta data to handle complex structures.
+     * Export users as XML with streaming
      *
-     * @param array $user_meta Raw user meta data.
-     * @return array Processed user meta data.
+     * @param string $operation_id Operation ID for progress tracking
      */
-    private function process_user_meta_data($user_meta)
-    {
-        $processed_meta = array();
-
-        foreach ($user_meta as $meta_key => $meta_value) {
-            $meta_value = maybe_unserialize($meta_value[0]);
-
-            if (is_array($meta_value) || is_object($meta_value)) {
-                $meta_value = json_encode($meta_value); // Convert arrays/objects to JSON string
-            }
-
-            $processed_meta[$meta_key] = $meta_value;
-        }
-
-        return $processed_meta;
-    }
-
-
-    /**
-     * Export users as an XML file.
-     *
-     * @param array $users List of users to export.
-     */
-    private function export_as_xml($users)
-    {
-        $filename = 'bp-users-export-' . date('Y-m-d') . '.xml';
-
+    private function export_as_xml_stream($operation_id) {
+        $filename = 'bp-users-export-' . date('Y-m-d-H-i-s') . '.xml';
+        
         header('Content-Type: text/xml; charset=utf-8');
         header('Content-Disposition: attachment; filename=' . $filename);
-
-        $xml = new SimpleXMLElement('<users/>');
-
-        foreach ($users as $user) {
-            $user_xml = $xml->addChild('user');
-            $user_xml->addChild('user_id', $user->ID);
-            $user_xml->addChild('username', htmlspecialchars($user->user_login, ENT_XML1, 'UTF-8'));
-            $user_xml->addChild('email', htmlspecialchars($user->user_email, ENT_XML1, 'UTF-8'));
-
-            $profile_data = $this->get_user_profile_data($user->ID);
-            foreach ($profile_data as $field_name => $field_value) {
-                $user_xml->addChild(sanitize_title($field_name), htmlspecialchars($field_value, ENT_XML1, 'UTF-8'));
+        header('Cache-Control: no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        
+        echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+        echo '<users>' . "\n";
+        
+        $page = 1;
+        $processed = 0;
+        
+        do {
+            $users = $this->get_users_batch($page, $_POST);
+            
+            if (empty($users)) {
+                break;
             }
-
-            $user_meta = $this->get_user_meta_data($user->ID);
-            foreach ($user_meta as $meta_key => $meta_value) {
-                $meta_value = maybe_unserialize($meta_value[0]);
-
-                if (is_array($meta_value) || is_object($meta_value)) {
-                    $meta_value = json_encode($meta_value); // Convert arrays/objects to JSON string
+            
+            foreach ($users as $user) {
+                $user_data = $this->prepare_user_data($user, $_POST);
+                
+                echo '  <user>' . "\n";
+                foreach ($user_data as $key => $value) {
+                    $safe_key = preg_replace('/[^a-zA-Z0-9_]/', '_', $key);
+                    $safe_value = htmlspecialchars($value, ENT_XML1 | ENT_COMPAT, 'UTF-8');
+                    echo "    <{$safe_key}>{$safe_value}</{$safe_key}>\n";
                 }
-
-                $user_xml->addChild(sanitize_title($meta_key), htmlspecialchars($meta_value, ENT_XML1, 'UTF-8'));
+                echo '  </user>' . "\n";
+                
+                $processed++;
+                
+                // Update progress periodically
+                if ($processed % 50 === 0 && $this->progress) {
+                    $this->progress->update_progress($operation_id, $processed);
+                }
+                
+                // Flush output
+                if (ob_get_level()) {
+                    ob_flush();
+                }
+                flush();
             }
+            
+            $page++;
+            
+        } while (count($users) === $this->batch_size);
+        
+        // Final progress update
+        if ($this->progress) {
+            $this->progress->update_progress($operation_id, $processed);
         }
-
-        echo $xml->asXML();
+        
+        echo '</users>';
         exit;
     }
 
-
     /**
-     * Retrieve the names of all BuddyPress XProfile fields.
+     * Prepare user data for export
      *
-     * @return array List of XProfile field names.
+     * @param WP_User $user User object
+     * @param array $settings Export settings
+     * @return array Prepared user data
      */
-    public function get_xprofile_field_names()
-    {
-        $field_names = [];
+    public function prepare_user_data($user, $settings = array()) {
+        // Base user data
+        $data = array(
+            'user_id' => $user->ID,
+            'username' => $user->user_login,
+            'email' => $user->user_email,
+            'display_name' => $user->display_name,
+            'first_name' => get_user_meta($user->ID, 'first_name', true),
+            'last_name' => get_user_meta($user->ID, 'last_name', true),
+            'description' => get_user_meta($user->ID, 'description', true),
+            'user_url' => $user->user_url,
+            'registered' => $user->user_registered,
+            'role' => implode(',', $user->roles),
+            'status' => $user->user_status
+        );
 
-        if (bp_is_active('xprofile')) {
-            $profile_groups = bp_xprofile_get_groups(array(
-                'fetch_fields' => true,
-            ));
-
-            if (is_array($profile_groups)) {
-                foreach ($profile_groups as $group) {
-                    foreach ($group->fields as $field) {
-                        $field_names[] = $field->name;
-                    }
-                }
+        // Add selected XProfile fields
+        $selected_xprofile_fields = isset($settings['xprofile_fields']) ? 
+            array_map('sanitize_text_field', $settings['xprofile_fields']) : array();
+        
+        if (!empty($selected_xprofile_fields)) {
+            $profile_data = $this->get_user_profile_data($user->ID);
+            foreach ($selected_xprofile_fields as $field_name) {
+                $data['xprofile_' . sanitize_key($field_name)] = 
+                    isset($profile_data[$field_name]) ? $profile_data[$field_name] : '';
             }
         }
 
-        return $field_names;
+        // Add selected user meta fields
+        $selected_user_meta_keys = isset($settings['user_meta_keys']) ? 
+            array_map('sanitize_text_field', $settings['user_meta_keys']) : array();
+        
+        if (!empty($selected_user_meta_keys)) {
+            foreach ($selected_user_meta_keys as $meta_key) {
+                $meta_value = get_user_meta($user->ID, $meta_key, true);
+                
+                // Handle complex data types
+                if (is_array($meta_value) || is_object($meta_value)) {
+                    $meta_value = json_encode($meta_value);
+                }
+                
+                $data['meta_' . sanitize_key($meta_key)] = $meta_value;
+            }
+        }
+
+        // Allow filtering of user data
+        return apply_filters('bp_export_import_export_user_data', $data, $user, $settings);
     }
 
     /**
-     * Retrieve user profile data for export.
+     * Get user profile data (BuddyPress XProfile)
      *
-     * @param int $user_id The user ID.
-     * @return array Associative array of profile field names and values.
+     * @param int $user_id User ID
+     * @return array Profile data
      */
-    private function get_user_profile_data($user_id)
-    {
-        $profile_data = [];
+    private function get_user_profile_data($user_id) {
+        $profile_data = array();
 
-        if (bp_is_active('xprofile')) {
+        if (!function_exists('bp_is_active') || !bp_is_active('xprofile')) {
+            return $profile_data;
+        }
+
+        if (function_exists('bp_xprofile_get_groups')) {
             $profile_groups = bp_xprofile_get_groups(array(
                 'fetch_fields' => true,
             ));
 
             if (is_array($profile_groups)) {
                 foreach ($profile_groups as $group) {
-                    foreach ($group->fields as $field) {
-                        $field_value = xprofile_get_field_data($field->id, $user_id, 'comma');
-                        $profile_data[$field->name] = $field_value;
+                    if (isset($group->fields) && is_array($group->fields)) {
+                        foreach ($group->fields as $field) {
+                            $field_value = '';
+                            if (function_exists('xprofile_get_field_data')) {
+                                $field_value = xprofile_get_field_data($field->id, $user_id, 'comma');
+                            }
+                            $profile_data[$field->name] = $field_value;
+                        }
                     }
                 }
             }
@@ -304,41 +580,162 @@ class BP_Export_Import_Export
     }
 
     /**
-     * Retrieve all unique user meta keys for a random user.
+     * Get available XProfile field names
      *
-     * @return array Unique user meta keys.
+     * @return array Array of field names
      */
-    public function get_random_user_meta_keys()
-    {
-        // Get a random user ID
-        $random_user = get_users(array(
-            'number' => 1,
-            'orderby' => 'rand',
-            'fields' => 'ID',
-        ));
+    public function get_xprofile_field_names() {
+        $field_names = array();
 
-        if (empty($random_user) || ! isset($random_user[0])) {
-            return [];
+        if (!function_exists('bp_is_active') || !bp_is_active('xprofile')) {
+            return $field_names;
         }
 
-        // Get the meta keys for the random user
-        $user_id = $random_user[0];
-        $user_meta = get_user_meta($user_id);
-        $meta_keys = array_keys($user_meta);
+        if (function_exists('bp_xprofile_get_groups')) {
+            $profile_groups = bp_xprofile_get_groups(array(
+                'fetch_fields' => true,
+            ));
 
-        return $meta_keys;
+            if (is_array($profile_groups)) {
+                foreach ($profile_groups as $group) {
+                    if (isset($group->fields) && is_array($group->fields)) {
+                        foreach ($group->fields as $field) {
+                            $field_names[] = $field->name;
+                        }
+                    }
+                }
+            }
+        }
+
+        return $field_names;
     }
 
     /**
-     * Retrieve all user meta data for export.
+     * Get sample user meta keys for selection
      *
-     * @param int $user_id The user ID.
-     * @return array Associative array of user meta keys and values.
+     * @return array Array of meta keys
      */
-    private function get_user_meta_data($user_id)
-    {
-        return get_user_meta($user_id);
+    public function get_user_meta_keys_sample() {
+        global $wpdb;
+        
+        // Get unique meta keys from a sample of users, excluding WordPress internal keys
+        $meta_keys = $wpdb->get_col("
+            SELECT DISTINCT meta_key 
+            FROM {$wpdb->usermeta} 
+            WHERE meta_key NOT LIKE 'wp_%' 
+            AND meta_key NOT LIKE 'session_tokens'
+            AND meta_key NOT LIKE '_wp_%'
+            AND meta_key NOT LIKE 'dismissed_%'
+            AND meta_key NOT LIKE 'managenav%'
+            AND meta_key NOT LIKE 'meta-box-%'
+            ORDER BY meta_key
+            LIMIT 50
+        ");
+        
+        return $meta_keys ? $meta_keys : array();
+    }
+
+    /**
+     * Get XProfile field groups with fields
+     *
+     * @return array Array of field groups
+     */
+    public function get_xprofile_field_groups() {
+        $field_groups = array();
+
+        if (!function_exists('bp_is_active') || !bp_is_active('xprofile')) {
+            return $field_groups;
+        }
+
+        if (function_exists('bp_xprofile_get_groups')) {
+            $groups = bp_xprofile_get_groups(array('fetch_fields' => true));
+            
+            if (is_array($groups)) {
+                foreach ($groups as $group) {
+                    $group_data = array(
+                        'id' => $group->id,
+                        'name' => $group->name,
+                        'description' => $group->description,
+                        'fields' => array()
+                    );
+                    
+                    if (isset($group->fields) && is_array($group->fields)) {
+                        foreach ($group->fields as $field) {
+                            $group_data['fields'][] = array(
+                                'id' => $field->id,
+                                'name' => $field->name,
+                                'type' => $field->type,
+                                'description' => $field->description,
+                                'is_required' => $field->is_required
+                            );
+                        }
+                    }
+                    
+                    $field_groups[] = $group_data;
+                }
+            }
+        }
+
+        return $field_groups;
+    }
+
+    /**
+     * Get export statistics
+     *
+     * @return array Export statistics
+     */
+    public function get_export_stats() {
+        global $wpdb;
+        
+        $stats = array();
+        
+        // Get total users count
+        $stats['total_users'] = count_users();
+        
+        // Get users by role
+        $stats['users_by_role'] = array();
+        foreach (wp_roles()->get_names() as $role_key => $role_name) {
+            $user_count = count_users()['avail_roles'][$role_key] ?? 0;
+            $stats['users_by_role'][$role_key] = array(
+                'name' => $role_name,
+                'count' => $user_count
+            );
+        }
+        
+        // Get recent export operations
+        $table_name = $wpdb->prefix . 'bp_export_import_operations';
+        if ($wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") === $table_name) {
+            $stats['recent_exports'] = $wpdb->get_results(
+                "SELECT * FROM {$table_name} 
+                 WHERE operation_type = 'export' 
+                 ORDER BY started_at DESC 
+                 LIMIT 5",
+                ARRAY_A
+            );
+        }
+        
+        return $stats;
+    }
+
+    /**
+     * Schedule background export
+     *
+     * @param array $settings Export settings
+     * @return string|false Operation ID or false on failure
+     */
+    public function schedule_background_export($settings) {
+        $background_process = bp_export_import()->get_component('background_process');
+        
+        if (!$background_process) {
+            return false;
+        }
+        
+        $operation_id = $this->progress->generate_operation_id('export');
+        
+        if ($background_process->queue_export($operation_id, $settings)) {
+            return $operation_id;
+        }
+        
+        return false;
     }
 }
-
-new BP_Export_Import_Export();
